@@ -38,6 +38,8 @@ static void drm_device_free(AVHWDeviceContext *hwdev)
 {
     AVDRMDeviceContext *hwctx = hwdev->hwctx;
 
+    av_log(NULL, AV_LOG_DEBUG, "drm_device_free called\n");
+
     close(hwctx->fd);
 }
 
@@ -46,6 +48,8 @@ static int drm_device_create(AVHWDeviceContext *hwdev, const char *device,
 {
     AVDRMDeviceContext *hwctx = hwdev->hwctx;
     drmVersionPtr version;
+
+    av_log(NULL, AV_LOG_DEBUG, "drm_device_create called\n");
 
     hwctx->fd = open(device, O_RDWR);
     if (hwctx->fd < 0)
@@ -71,8 +75,23 @@ static int drm_device_create(AVHWDeviceContext *hwdev, const char *device,
     return 0;
 }
 
+static int drm_frames_init(AVHWFramesContext *hwfc)
+{
+    av_log(NULL, AV_LOG_DEBUG, "drm_frames_init called\n");
+
+    if (!hwfc->pool) {
+        hwfc->internal->pool_internal = av_buffer_pool_init(sizeof(AVDRMFrameDescriptor), NULL);
+        if (!hwfc->internal->pool_internal)
+            return AVERROR(ENOMEM);
+    }
+
+    return 0;
+}
+
 static int drm_get_buffer(AVHWFramesContext *hwfc, AVFrame *frame)
 {
+    av_log(NULL, AV_LOG_DEBUG, "drm_get_buffer called\n");
+
     frame->buf[0] = av_buffer_pool_get(hwfc->pool);
     if (!frame->buf[0])
         return AVERROR(ENOMEM);
@@ -99,6 +118,8 @@ static void drm_unmap_frame(AVHWFramesContext *hwfc,
     DRMMapping *map = hwmap->priv;
     int i;
 
+    av_log(NULL, AV_LOG_DEBUG, "drm_unmap_frame called\n");
+
     for (i = 0; i < map->nb_regions; i++) {
         if (map->address[i])
             munmap(map->address[i], map->length[i]);
@@ -115,6 +136,8 @@ static int drm_map_frame(AVHWFramesContext *hwfc,
     int err, i, p, plane;
     int mmap_prot;
     void *addr;
+
+    av_log(NULL, AV_LOG_DEBUG, "drm_map_frame called\n");
 
     map = av_mallocz(sizeof(*map));
     if (!map)
@@ -180,6 +203,8 @@ static int drm_transfer_get_formats(AVHWFramesContext *ctx,
 {
     enum AVPixelFormat *pix_fmts;
 
+    av_log(NULL, AV_LOG_DEBUG, "drm_transfer_get_formats called\n");
+
     pix_fmts = av_malloc_array(2, sizeof(*pix_fmts));
     if (!pix_fmts)
         return AVERROR(ENOMEM);
@@ -196,6 +221,8 @@ static int drm_transfer_data_from(AVHWFramesContext *hwfc,
 {
     AVFrame *map;
     int err;
+
+    av_log(NULL, AV_LOG_DEBUG, "drm_transfer_data_from called\n");
 
     if (dst->width > hwfc->width || dst->height > hwfc->height)
         return AVERROR(EINVAL);
@@ -228,6 +255,8 @@ static int drm_transfer_data_to(AVHWFramesContext *hwfc,
     AVFrame *map;
     int err;
 
+    av_log(NULL, AV_LOG_DEBUG, "drm_transfer_data_to called\n");
+
     if (src->width > hwfc->width || src->height > hwfc->height)
         return AVERROR(EINVAL);
 
@@ -258,6 +287,8 @@ static int drm_map_from(AVHWFramesContext *hwfc, AVFrame *dst,
 {
     int err;
 
+    av_log(NULL, AV_LOG_DEBUG, "drm_map_from called\n");
+
     if (hwfc->sw_format != dst->format)
         return AVERROR(ENOSYS);
 
@@ -280,6 +311,7 @@ const HWContextType ff_hwcontext_type_drm = {
 
     .device_create          = &drm_device_create,
 
+    .frames_init            = &drm_frames_init,
     .frames_get_buffer      = &drm_get_buffer,
 
     .transfer_get_formats   = &drm_transfer_get_formats,
