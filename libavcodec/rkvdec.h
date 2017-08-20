@@ -28,9 +28,23 @@
 #include "avcodec.h"
 #include "internal.h"
 
+#include <rockchip/rk_mpi.h>
+
 typedef struct RKVDECContext {
-    int fd;
+    //int fd;
+    int64_t time;
+
+    MppCtx mppctx;
+    MppApi *mpi;
+
+    void *vps;
+    void *sps;
+    void *pps;
 } RKVDECContext;
+
+int ff_rkvdec_write_data(AVCodecContext *avctx, const uint8_t *buffer, uint32_t size, int64_t dts, int64_t pts);
+
+int ff_rkvdec_retrieve_frame(AVCodecContext *avctx, AVFrame *frame);
 
 int ff_rkvdec_decode_init(AVCodecContext *avctx);
 

@@ -21,6 +21,8 @@
 
 #include "rkvdec.h"
 
+#include "libavutil/time.h"
+
 typedef struct RKVDECHWRegsHEVC {
     struct swreg_id {
         uint32_t    minor_ver           : 8;
@@ -140,23 +142,141 @@ typedef struct RKVDECPictureHEVC {
     unsigned            slice_count;
     const uint8_t       *bitstream;
     unsigned            bitstream_size;
-    RKVDECHWRegsHEVC    hw_regs;
+    //RKVDECHWRegsHEVC    hw_regs;
 } RKVDECPictureHEVC;
+
+static int h2645_ps_to_nalu(const uint8_t *src, int src_size, uint8_t **out, int *out_size)
+{
+    int i;
+    int ret = 0;
+    uint8_t *p = NULL;
+    static const uint8_t nalu_header[] = { 0x00, 0x00, 0x00, 0x01 };
+
+    if (!out || !out_size) {
+        return AVERROR(EINVAL);
+    }
+
+    p = av_malloc(sizeof(nalu_header) + src_size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!p) {
+        return AVERROR(ENOMEM);
+    }
+
+    *out = p;
+    *out_size = sizeof(nalu_header) + src_size;
+
+    memcpy(p, nalu_header, sizeof(nalu_header));
+    memcpy(p + sizeof(nalu_header), src, src_size);
+
+    /* Escape 0x00, 0x00, 0x0{0-3} pattern */
+    for (i = 4; i < *out_size; i++) {
+        if (i < *out_size - 3 &&
+            p[i + 0] == 0 &&
+            p[i + 1] == 0 &&
+            p[i + 2] <= 3) {
+            uint8_t *new;
+
+            *out_size += 1;
+            new = av_realloc(*out, *out_size + AV_INPUT_BUFFER_PADDING_SIZE);
+            if (!new) {
+                ret = AVERROR(ENOMEM);
+                goto done;
+            }
+            *out = p = new;
+
+            i = i + 2;
+            memmove(p + i + 1, p + i, *out_size - (i + 1));
+            p[i] = 0x03;
+        }
+    }
+done:
+    if (ret < 0) {
+        av_freep(out);
+        *out_size = 0;
+    }
+
+    return ret;
+}
+
+static int h2645_nal_to_nalu(const uint8_t *src, int src_size, uint8_t **out, int *out_size)
+{
+    uint8_t *p = NULL;
+    static const uint8_t nalu_header[] = { 0x00, 0x00, 0x01 };
+
+    if (!out || !out_size) {
+        return AVERROR(EINVAL);
+    }
+
+    p = av_malloc(sizeof(nalu_header) + src_size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!p) {
+        return AVERROR(ENOMEM);
+    }
+
+    *out = p;
+    *out_size = sizeof(nalu_header) + src_size;
+
+    memcpy(p, nalu_header, sizeof(nalu_header));
+    memcpy(p + sizeof(nalu_header), src, src_size);
+
+    return 0;
+}
 
 static int rkvdec_hevc_start_frame(AVCodecContext *avctx,
                                   av_unused const uint8_t *buffer,
                                   av_unused uint32_t size)
 {
+    RKVDECContext *rkctx = avctx->internal->hwaccel_priv_data;
     const HEVCContext *h = avctx->priv_data;
     RKVDECPictureHEVC *pic = h->ref->hwaccel_picture_private;
+    int ret = 0;
+    uint8_t *data = NULL;
+    int data_size = 0;
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p pic=%p\n", __func__, avctx, pic);
+
+    rkctx->time = av_gettime_relative();
 
     pic->slice_count    = 0;
     pic->bitstream_size = 0;
     pic->bitstream      = NULL;
 
-    return 0;
+    if (h->ps.vps && rkctx->vps != h->ps.vps) {
+        av_log(avctx, AV_LOG_DEBUG, "%s: new VPS, vps=%p\n", __func__, h->ps.vps);
+        if ((ret = h2645_ps_to_nalu(h->ps.vps->data, h->ps.vps->data_size, &data, &data_size)) < 0) {
+            goto done;
+        }
+        ff_rkvdec_write_data(avctx, data, data_size, AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+        av_freep(&data);
+
+        rkctx->vps = h->ps.vps;
+        rkctx->sps = NULL;
+        rkctx->pps = NULL;
+    }
+
+    if (h->ps.sps && rkctx->sps != h->ps.sps) {
+        av_log(avctx, AV_LOG_DEBUG, "%s: new SPS, sps=%p\n", __func__, h->ps.sps);
+        if ((ret = h2645_ps_to_nalu(h->ps.sps->data, h->ps.sps->data_size, &data, &data_size)) < 0) {
+            goto done;
+        }
+        ff_rkvdec_write_data(avctx, data, data_size, AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+        av_freep(&data);
+
+        rkctx->sps = h->ps.sps;
+        rkctx->pps = NULL;
+    }
+
+    if (h->ps.pps && rkctx->pps != h->ps.pps) {
+        av_log(avctx, AV_LOG_DEBUG, "%s: new PPS, pps=%p\n", __func__, h->ps.pps);
+        if ((ret = h2645_ps_to_nalu(h->ps.pps->data, h->ps.pps->data_size, &data, &data_size)) < 0) {
+            goto done;
+        }
+        ff_rkvdec_write_data(avctx, data, data_size, AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+        av_freep(&data);
+
+        rkctx->pps = h->ps.pps;
+    }
+
+done:
+    return ret;
 }
 
 static int rkvdec_hevc_decode_slice(AVCodecContext *avctx,
@@ -165,8 +285,11 @@ static int rkvdec_hevc_decode_slice(AVCodecContext *avctx,
 {
     const HEVCContext *h = avctx->priv_data;
     RKVDECPictureHEVC *pic = h->ref->hwaccel_picture_private;
+    int ret = 0;
+    uint8_t *data = NULL;
+    int data_size = 0;
 
-    av_log(avctx, AV_LOG_INFO, "%s: avctx=%p pic=%p slice_count=%u size=%u vps=%p sps=%p pps=%p\n", __func__, avctx, pic, pic->slice_count, size, h->ps.vps, h->ps.sps, h->ps.pps);
+    av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p pic=%p slice_count=%u size=%u vps=%p sps=%p pps=%p\n", __func__, avctx, pic, pic->slice_count, size, h->ps.vps, h->ps.sps, h->ps.pps);
 
     if (!pic->bitstream)
         pic->bitstream = buffer;
@@ -174,18 +297,32 @@ static int rkvdec_hevc_decode_slice(AVCodecContext *avctx,
 
     pic->slice_count++;
 
-    return 0;
+    if ((ret = h2645_nal_to_nalu(buffer, size, &data, &data_size)) < 0) {
+        goto done;
+    }
+    ff_rkvdec_write_data(avctx, data, data_size, AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+    av_freep(&data);
+
+done:
+    return ret;
 }
 
 static int rkvdec_hevc_end_frame(AVCodecContext *avctx)
 {
+    RKVDECContext *rkctx = avctx->internal->hwaccel_priv_data;
     const HEVCContext *h = avctx->priv_data;
     RKVDECPictureHEVC *pic = h->ref->hwaccel_picture_private;
+    int64_t end_time;
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p pic=%p slice_count=%u bitstream_size=%u\n", __func__, avctx, pic, pic->slice_count, pic->bitstream_size);
 
     if (pic->slice_count <= 0 || pic->bitstream_size <= 0)
         return -1;
+
+    ff_rkvdec_retrieve_frame(avctx, h->output_frame);
+
+    end_time = av_gettime_relative();
+    av_log(avctx, AV_LOG_DEBUG, "%s: time=%"PRId64"\n", __func__, end_time - rkctx->time);
 
     return 0;
 }
