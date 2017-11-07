@@ -157,6 +157,10 @@ static int rkmpp_init_decoder(AVCodecContext *avctx)
     RK_S64 paramS64;
     RK_S32 paramS32;
 
+    // HACK for Kodi
+    if ((ret = avctx->get_format(avctx, avctx->codec->pix_fmts)) < 0)
+        return ret;
+
     avctx->pix_fmt = AV_PIX_FMT_DRM_PRIME;
 
     // create a decoder and a ref to it
