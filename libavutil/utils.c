@@ -32,7 +32,7 @@ const char av_util_ffversion[] = "FFmpeg version " FFMPEG_VERSION;
 
 const char *av_version_info(void)
 {
-    return "ffmpeg-3.4-kodi";
+    return FFMPEG_VERSION;
 }
 
 unsigned avutil_version(void)
