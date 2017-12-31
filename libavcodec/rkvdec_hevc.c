@@ -189,13 +189,46 @@ static int rkvdec_hevc_decode_slice(AVCodecContext *avctx,
 
 static int rkvdec_hevc_end_frame(AVCodecContext *avctx)
 {
+    RKVDECContext *rkctx = avctx->internal->hwaccel_priv_data;
     const HEVCContext *h = avctx->priv_data;
     RKVDECPictureHEVC *pic = h->ref->hwaccel_picture_private;
+    AVDRMFrameDescriptor *desc = NULL;
+    AVDRMLayerDescriptor *layer = NULL;
+    RKGEMDescriptor *gem = NULL;
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p pic=%p slice_count=%u bitstream_size=%u\n", __func__, avctx, pic, pic->slice_count, pic->bitstream_size);
 
     if (pic->slice_count <= 0 || pic->bitstream_size <= 0)
         return -1;
+
+    desc = (AVDRMFrameDescriptor*)h->output_frame->data[0];
+    if (desc) {
+        h->output_frame->buf[1] = av_buffer_pool_get(rkctx->pool);
+        if (!h->output_frame->buf[1])
+            return AVERROR(ENOMEM);
+
+        h->output_frame->data[1] = (uint8_t*)h->output_frame->buf[1]->data;
+        gem = (RKGEMDescriptor*)h->output_frame->data[1];
+
+        av_log(avctx, AV_LOG_DEBUG, "%s: desc=%p gem=%p handle=%u prime_fd=%d format=%u width=%u height=%u size=%llu\n", __func__, desc, gem, gem->handle, gem->prime_fd, gem->format, gem->width, gem->height, gem->size);
+
+        desc->nb_objects = 1;
+        desc->objects[0].fd = gem->prime_fd;
+        desc->objects[0].size = gem->size;
+
+        desc->nb_layers = 1;
+        layer = &desc->layers[0];
+        layer->format = gem->format;
+        layer->nb_planes = 2;
+
+        layer->planes[0].object_index = 0;
+        layer->planes[0].offset = 0;
+        layer->planes[0].pitch = gem->width;
+
+        layer->planes[1].object_index = 0;
+        layer->planes[1].offset = layer->planes[0].pitch * gem->height;
+        layer->planes[1].pitch = layer->planes[0].pitch;
+    }
 
     return 0;
 }
