@@ -30,7 +30,17 @@
 
 typedef struct RKVDECContext {
     int fd;
+    AVBufferPool *pool;
 } RKVDECContext;
+
+typedef struct RKGEMDescriptor {
+    uint32_t handle;
+    uint32_t format;
+    uint32_t width;
+    uint32_t height;
+    uint64_t size;
+    int prime_fd;
+} RKGEMDescriptor;
 
 int ff_rkvdec_decode_init(AVCodecContext *avctx);
 
