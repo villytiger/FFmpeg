@@ -323,6 +323,7 @@ External library support:
   --enable-omx             enable OpenMAX IL code [no]
   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
   --enable-rkmpp           enable Rockchip Media Process Platform code [no]
+  --enable-rkvpu           enable Rockchip VPU code [no]
   --disable-v4l2-m2m       disable V4L2 mem2mem code [autodetect]
   --disable-vaapi          disable Video Acceleration API (mainly Unix/Intel) code [autodetect]
   --disable-vdpau          disable Nvidia Video Decode and Presentation API for Unix code [autodetect]
@@ -1761,6 +1762,7 @@ HWACCEL_LIBRARY_LIST="
     mmal
     omx
     opencl
+    rkvpu
 "
 
 DOCUMENT_LIST="

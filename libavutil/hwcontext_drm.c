@@ -67,6 +67,17 @@ static int drm_device_create(AVHWDeviceContext *hwdev, const char *device,
     return 0;
 }
 
+static int drm_frames_init(AVHWFramesContext *hwfc)
+{
+    if (!hwfc->pool) {
+        hwfc->internal->pool_internal = av_buffer_pool_init(sizeof(AVDRMFrameDescriptor), av_buffer_allocz);
+        if (!hwfc->internal->pool_internal)
+            return AVERROR(ENOMEM);
+    }
+
+    return 0;
+}
+
 static int drm_get_buffer(AVHWFramesContext *hwfc, AVFrame *frame)
 {
     frame->buf[0] = av_buffer_pool_get(hwfc->pool);
@@ -275,6 +286,7 @@ const HWContextType ff_hwcontext_type_drm = {
 
     .device_create          = &drm_device_create,
 
+    .frames_init            = &drm_frames_init,
     .frames_get_buffer      = &drm_get_buffer,
 
     .transfer_get_formats   = &drm_transfer_get_formats,
