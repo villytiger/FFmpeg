@@ -76,10 +76,10 @@ static int v4l2_request_mpeg2_start_frame(AVCodecContext *avctx,
 
     switch (s->pict_type) {
     case AV_PICTURE_TYPE_B:
-        controls->slice_params.backward_ref_index = ff_v4l2_request_get_capture_index(s->next_picture.f);
+        controls->slice_params.backward_ref_tag = ff_v4l2_request_get_capture_tag(s->next_picture.f);
         // fall-through
     case AV_PICTURE_TYPE_P:
-        controls->slice_params.forward_ref_index = ff_v4l2_request_get_capture_index(s->last_picture.f);
+        controls->slice_params.forward_ref_tag = ff_v4l2_request_get_capture_tag(s->last_picture.f);
     }
 
     controls->quantization = (struct v4l2_ctrl_mpeg2_quantization) {
