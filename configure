@@ -2802,6 +2802,8 @@ h264_dxva2_hwaccel_deps="dxva2"
 h264_dxva2_hwaccel_select="h264_decoder"
 h264_nvdec_hwaccel_deps="nvdec"
 h264_nvdec_hwaccel_select="h264_decoder"
+h264_v4l2request_hwaccel_deps="v4l2_request h264_v4l2_request"
+h264_v4l2request_hwaccel_select="h264_decoder"
 h264_vaapi_hwaccel_deps="vaapi"
 h264_vaapi_hwaccel_select="h264_decoder"
 h264_vdpau_hwaccel_deps="vdpau"
@@ -6237,6 +6239,7 @@ check_cc vp9_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_VP9;"
 
 check_header linux/media.h
 check_cc v4l2_request linux/media.h "unsigned long i = MEDIA_IOC_REQUEST_ALLOC;"
+check_cc h264_v4l2_request linux/videodev2.h "int i = V4L2_PIX_FMT_H264_SLICE;"
 check_cc mpeg2_v4l2_request linux/videodev2.h "int i = V4L2_PIX_FMT_MPEG2_SLICE;"
 
 check_header sys/videoio.h
