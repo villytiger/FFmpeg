@@ -67,51 +67,30 @@ typedef struct DPB {
     struct v4l2_h264_dpb_entry *entries;
 } DPB;
 
-static void fill_pic(struct v4l2_h264_dpb_entry *entry,
-                     const H264Picture          *pic)
+static int dpb_add(DPB *dpb, const H264Picture *pic, int reference)
 {
-    entry->buf_index = ff_v4l2_request_get_capture_index(pic->f);
-    entry->frame_num = pic->long_ref ? pic->pic_id : pic->frame_num;
-    entry->flags = V4L2_H264_DPB_ENTRY_FLAG_VALID | V4L2_H264_DPB_ENTRY_FLAG_ACTIVE;
-    if ((pic->reference & PICT_FRAME) != PICT_FRAME)
-        entry->flags |= (pic->reference & PICT_TOP_FIELD) ? V4L2_H264_DPB_ENTRY_FLAG_TOP_FIELD : V4L2_H264_DPB_ENTRY_FLAG_BOTTOM_FIELD;
-    if (pic->reference)
-        entry->flags |= pic->long_ref ? V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM : V4L2_H264_DPB_ENTRY_FLAG_SHORT_TERM;
-    //if ((pic->reference & PICT_TOP_FIELD) && pic->field_poc[0] != INT_MAX)
-        entry->top_field_order_cnt = pic->field_poc[0];
-    //if ((pic->reference & PICT_BOTTOM_FIELD) && pic->field_poc[1] != INT_MAX)
-        entry->bottom_field_order_cnt = pic->field_poc[1];
-}
-
-static int dpb_add(DPB *dpb, const H264Picture *pic)
-{
+    struct v4l2_h264_dpb_entry *entry;
+    int buf_tag;
     int i;
 
-    for (i = 0; i < dpb->size; i++) {
-        struct v4l2_h264_dpb_entry * const entry = &dpb->entries[i];
-        if (entry->buf_index == ff_v4l2_request_get_capture_index(pic->f)) {
-            struct v4l2_h264_dpb_entry temp_entry;
+    buf_tag = ff_v4l2_request_get_capture_tag(pic->f);
 
-            fill_pic(&temp_entry, pic);
-	    av_log(NULL, AV_LOG_ERROR, "%s: DPB index: %d buffer index: %d\n", __func__, i, entry->buf_index);
-
-            if ((temp_entry.flags ^ entry->flags) & (V4L2_H264_DPB_ENTRY_FLAG_TOP_FIELD | V4L2_H264_DPB_ENTRY_FLAG_BOTTOM_FIELD)) {
-                entry->flags |= temp_entry.flags & (V4L2_H264_DPB_ENTRY_FLAG_TOP_FIELD | V4L2_H264_DPB_ENTRY_FLAG_BOTTOM_FIELD);
-                if (temp_entry.flags & V4L2_H264_DPB_ENTRY_FLAG_TOP_FIELD) {
-                    entry->top_field_order_cnt    = temp_entry.top_field_order_cnt;
-                } else {
-                    entry->bottom_field_order_cnt = temp_entry.bottom_field_order_cnt;
-                }
-            }
+    for (i = 0; i < dpb->size; i++)
+        if (dpb->entries[i].tag == buf_tag)
             return 0;
-        }
-    }
 
     if (dpb->size >= dpb->max_size)
         return -1;
 
-    fill_pic(&dpb->entries[dpb->size++], pic);
-    av_log(NULL, AV_LOG_ERROR, "%s: new DPB index: %d buffer index: %d\n", __func__, dpb->size-1, dpb->entries[dpb->size-1].buf_index);
+    entry = &dpb->entries[dpb->size++];
+    entry->tag = buf_tag;
+    entry->frame_num = pic->long_ref ? pic->pic_id : pic->frame_num;
+    entry->flags = V4L2_H264_DPB_ENTRY_FLAG_VALID | V4L2_H264_DPB_ENTRY_FLAG_ACTIVE;
+    if (pic->long_ref)
+        entry->flags |= V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM;
+    entry->top_field_order_cnt = pic->field_poc[0];
+    entry->bottom_field_order_cnt = pic->field_poc[1];
+
     return 0;
 }
 
@@ -127,13 +106,13 @@ static int fill_dpb(struct v4l2_ctrl_h264_decode_param *decode,
 
     for (i = 0; i < h->short_ref_count; i++) {
         const H264Picture *pic = h->short_ref[i];
-        if (pic && dpb_add(&dpb, pic) < 0)
+	if (pic && dpb_add(&dpb, pic, h->short_ref[i]->reference) < 0)
             return -1;
     }
 
     for (i = 0; i < 16; i++) {
         const H264Picture *pic = h->long_ref[i];
-        if (pic && dpb_add(&dpb, pic) < 0)
+	if (pic && dpb_add(&dpb, pic, h->long_ref[i]->reference) < 0)
             return -1;
     }
 
@@ -141,10 +120,8 @@ static int fill_dpb(struct v4l2_ctrl_h264_decode_param *decode,
         const H264Picture *pic = &h->DPB[i];
 
         if (pic != h->cur_pic_ptr && pic->f->buf[0])
-            dpb_add(&dpb, pic);
+            dpb_add(&dpb, pic, pic->reference);
     }
-
-    av_log(NULL, AV_LOG_ERROR, "%s: num of DPB entries: %d\n", __func__, dpb.size);
 
     return 0;
 }
@@ -152,25 +129,21 @@ static int fill_dpb(struct v4l2_ctrl_h264_decode_param *decode,
 static uint8_t get_ref_pic_index(const H264Picture *pic,
                                  struct v4l2_ctrl_h264_decode_param *decode)
 {
-    int frame_buf_index;
+    int frame_buf_tag;
     int frame_num;
     uint8_t i;
 
     if (!pic)
         return 0;
 
-    frame_buf_index = ff_v4l2_request_get_capture_index(pic->f);
+    frame_buf_tag = ff_v4l2_request_get_capture_tag(pic->f);
     frame_num = pic->long_ref ? pic->pic_id : pic->frame_num;
 
     for (i = 0; i < FF_ARRAY_ELEMS(decode->dpb); i++) {
         struct v4l2_h264_dpb_entry *entry = &decode->dpb[i];
-	if ((entry->flags & V4L2_H264_DPB_ENTRY_FLAG_VALID) && (entry->buf_index == frame_buf_index) && (entry->frame_num == frame_num)) {
-		av_log(NULL, AV_LOG_ERROR, "%s: index found: %d for buf_index: %d\n", __func__, i, frame_buf_index);
+        if ((entry->flags & V4L2_H264_DPB_ENTRY_FLAG_VALID) && (entry->tag == frame_buf_tag) && (entry->frame_num == frame_num))
             return i;
-	}
     }
-
-    av_log(NULL, AV_LOG_ERROR, "%s: index not found for buf_index: %d\n", __func__, frame_buf_index);
 
     return 0;
 }
@@ -305,8 +278,6 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
         .num_ref_idx_l1_active_minus1 = sl->list_count > 1 ? sl->ref_count[1] - 1 : 0,
     };
 
-    av_log(NULL, AV_LOG_ERROR, "%s: slice type: %d\n", __func__, slice.slice_type);
-
     if (sl->slice_type == AV_PICTURE_TYPE_B && sl->direct_spatial_mv_pred)
         slice.flags |= V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED;
     if ((h->picture_structure & PICT_FRAME) != PICT_FRAME) {
@@ -319,22 +290,14 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
     slice.pred_weight_table.luma_log2_weight_denom = sl->pwt.luma_log2_weight_denom;
 
     count = sl->list_count > 0 ? sl->ref_count[0] : 0;
-    av_log(NULL, AV_LOG_ERROR, "%s: backward ref count: %d\n", __func__, count);
-    for (i = 0; i < count; i++) {
-        slice.ref_pic_list0[i] = get_ref_pic_index(sl->ref_list[0][i].parent, &decode) << 1;
-        if (sl->ref_list[0][i].reference & PICT_BOTTOM_FIELD)
-            slice.ref_pic_list0[i] |= 1;
-    }
+    for (i = 0; i < count; i++)
+        slice.ref_pic_list0[i] = get_ref_pic_index(sl->ref_list[0][i].parent, &decode);
     if (count)
         fill_single_pred_weight_table(sl, 0, &slice.pred_weight_table.weight_factors[0]);
 
     count = sl->list_count > 1 ? sl->ref_count[1] : 0;
-    av_log(NULL, AV_LOG_ERROR, "%s: forward ref count: %d\n", __func__, count);
-    for (i = 0; i < count; i++) {
-        slice.ref_pic_list1[i] = get_ref_pic_index(sl->ref_list[1][i].parent, &decode) << 1;
-        if (sl->ref_list[1][i].reference & PICT_BOTTOM_FIELD)
-            slice.ref_pic_list1[i] |= 1;
-    }
+    for (i = 0; i < count; i++)
+        slice.ref_pic_list1[i] = get_ref_pic_index(sl->ref_list[1][i].parent, &decode);
     if (count)
         fill_single_pred_weight_table(sl, 1, &slice.pred_weight_table.weight_factors[1]);
 
