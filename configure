@@ -324,6 +324,7 @@ External library support:
   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
   --enable-rkmpp           enable Rockchip Media Process Platform code [no]
   --disable-v4l2-m2m       disable V4L2 mem2mem code [autodetect]
+  --enable-v4l2-request    enable V4L2 request API code [no]
   --disable-vaapi          disable Video Acceleration API (mainly Unix/Intel) code [autodetect]
   --disable-vdpau          disable Nvidia Video Decode and Presentation API for Unix code [autodetect]
   --disable-videotoolbox   disable VideoToolbox code [autodetect]
@@ -1782,6 +1783,7 @@ HWACCEL_LIBRARY_LIST="
     mmal
     omx
     opencl
+    v4l2_request
 "
 
 DOCUMENT_LIST="
@@ -2786,6 +2788,7 @@ nvdec_deps="ffnvcodec"
 videotoolbox_hwaccel_deps="videotoolbox pthreads"
 videotoolbox_hwaccel_extralibs="-framework QuartzCore"
 xvmc_deps="X11_extensions_XvMClib_h"
+v4l2_request_deps="linux_videodev2_h linux_media_h"
 
 h263_vaapi_hwaccel_deps="vaapi"
 h263_vaapi_hwaccel_select="h263_decoder"
@@ -6229,6 +6232,9 @@ check_cc h263_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_H263;"
 check_cc h264_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_H264;"
 check_cc vp8_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_VP8;"
 check_cc vp9_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_VP9;"
+
+check_header linux/media.h
+check_cc v4l2_request linux/media.h "unsigned long i = MEDIA_IOC_REQUEST_ALLOC;"
 
 check_header sys/videoio.h
 test_code cc sys/videoio.h "struct v4l2_frmsizeenum vfse; vfse.discrete.width = 0;" && enable_sanitized struct_v4l2_frmivalenum_discrete
