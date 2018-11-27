@@ -42,10 +42,6 @@ static void v4l2_request_hevc_fill_pred_table(const HEVCContext *h, struct v4l2_
 {
     int32_t luma_weight_denom, chroma_weight_denom;
     const SliceHeader *sh = &h->sh;
-    int i;
-
-    table->delta_chroma_log2_weight_denom = 0;
-    table->luma_log2_weight_denom = 0;
 
     if (sh->slice_type == HEVC_SLICE_I ||
         (sh->slice_type == HEVC_SLICE_P && !h->ps.pps->weighted_pred_flag) ||
@@ -54,14 +50,13 @@ static void v4l2_request_hevc_fill_pred_table(const HEVCContext *h, struct v4l2_
 
     table->luma_log2_weight_denom = sh->luma_log2_weight_denom;
 
-    if (h->ps.sps->chroma_format_idc) {
+    if (h->ps.sps->chroma_format_idc)
         table->delta_chroma_log2_weight_denom = sh->chroma_log2_weight_denom - sh->luma_log2_weight_denom;
-    }
 
     luma_weight_denom = (1 << sh->luma_log2_weight_denom);
     chroma_weight_denom = (1 << sh->chroma_log2_weight_denom);
 
-    for (i = 0; i < 15 && i < sh->nb_refs[L0]; i++) {
+    for (int i = 0; i < 15 && i < sh->nb_refs[L0]; i++) {
         table->delta_luma_weight_l0[i] = sh->luma_weight_l0[i] - luma_weight_denom;
         table->luma_offset_l0[i] = sh->luma_offset_l0[i];
         table->delta_chroma_weight_l0[i][0] = sh->chroma_weight_l0[i][0] - chroma_weight_denom;
@@ -73,7 +68,7 @@ static void v4l2_request_hevc_fill_pred_table(const HEVCContext *h, struct v4l2_
     if (sh->slice_type != HEVC_SLICE_B)
         return;
 
-    for (i = 0; i < 15 && i < sh->nb_refs[L1]; i++) {
+    for (int i = 0; i < 15 && i < sh->nb_refs[L1]; i++) {
         table->delta_luma_weight_l1[i] = sh->luma_weight_l1[i] - luma_weight_denom;
         table->luma_offset_l1[i] = sh->luma_offset_l1[i];
         table->delta_chroma_weight_l1[i][0] = sh->chroma_weight_l1[i][0] - chroma_weight_denom;
@@ -83,26 +78,26 @@ static void v4l2_request_hevc_fill_pred_table(const HEVCContext *h, struct v4l2_
     }
 }
 
-static int find_frame_rps_type(const HEVCContext *h, int frame_buf_index)
+static int find_frame_rps_type(const HEVCContext *h, int frame_buf_tag)
 {
     const HEVCFrame *frame;
     int i;
 
     for (i = 0; i < h->rps[ST_CURR_BEF].nb_refs; i++) {
         frame = h->rps[ST_CURR_BEF].ref[i];
-        if (frame && frame_buf_index == ff_v4l2_request_get_capture_index(frame->frame))
+        if (frame && frame_buf_tag == ff_v4l2_request_get_capture_tag(frame->frame))
             return V4L2_HEVC_DPB_ENTRY_RPS_ST_CURR_BEFORE;
     }
 
     for (i = 0; i < h->rps[ST_CURR_AFT].nb_refs; i++) {
         frame = h->rps[ST_CURR_AFT].ref[i];
-        if (frame && frame_buf_index == ff_v4l2_request_get_capture_index(frame->frame))
+        if (frame && frame_buf_tag == ff_v4l2_request_get_capture_tag(frame->frame))
             return V4L2_HEVC_DPB_ENTRY_RPS_ST_CURR_AFTER;
     }
 
     for (i = 0; i < h->rps[LT_CURR].nb_refs; i++) {
         frame = h->rps[LT_CURR].ref[i];
-        if (frame && frame_buf_index == ff_v4l2_request_get_capture_index(frame->frame))
+        if (frame && frame_buf_tag == ff_v4l2_request_get_capture_tag(frame->frame))
             return V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR;
     }
 
@@ -112,18 +107,18 @@ static int find_frame_rps_type(const HEVCContext *h, int frame_buf_index)
 static uint8_t get_ref_pic_index(const HEVCContext *h, const HEVCFrame *frame,
                                  struct v4l2_ctrl_hevc_slice_params *slice_params)
 {
-    int frame_buf_index;
+    int frame_buf_tag;
     uint8_t i;
 
     if (!frame)
         return 0;
 
-    frame_buf_index = ff_v4l2_request_get_capture_index(frame->frame);
+    frame_buf_tag = ff_v4l2_request_get_capture_tag(frame->frame);
 
     for (i = 0; i < slice_params->num_active_dpb_entries; i++) {
-        int buf_index = slice_params->dpb[i].buffer_index;
+        int buf_tag = slice_params->dpb[i].buffer_tag;
         int poc = slice_params->dpb[i].pic_order_cnt[0];
-        if (buf_index == frame_buf_index && poc == frame->poc)
+        if (buf_tag == frame_buf_tag && poc == frame->poc)
             return i;
     }
 
@@ -186,8 +181,8 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
         if (frame != pic && (frame->flags & (HEVC_FRAME_FLAG_LONG_REF | HEVC_FRAME_FLAG_SHORT_REF))) {
             struct v4l2_hevc_dpb_entry *entry = &slice_params->dpb[entries++];
 
-            entry->buffer_index = ff_v4l2_request_get_capture_index(frame->frame);
-            entry->rps = find_frame_rps_type(h, entry->buffer_index);
+            entry->buffer_tag = ff_v4l2_request_get_capture_tag(frame->frame);
+            entry->rps = find_frame_rps_type(h, entry->buffer_tag);
             entry->field_pic = frame->frame->interlaced_frame;
 
             /* TODO: Interleaved: Get the POC for each field. */
