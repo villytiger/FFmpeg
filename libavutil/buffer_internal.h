@@ -93,6 +93,9 @@ struct AVBufferPool {
     AVBufferRef* (*alloc)(int size);
     AVBufferRef* (*alloc2)(void *opaque, int size);
     void         (*pool_free)(void *opaque);
+
+    void         (*get)(void *opaque, void *data);
+    void         (*release)(void *opaque, void *data);
 };
 
 #endif /* AVUTIL_BUFFER_INTERNAL_H */

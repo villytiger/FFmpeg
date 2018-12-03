@@ -235,6 +235,31 @@ AVBufferPool *av_buffer_pool_init2(int size, void *opaque,
     return pool;
 }
 
+AVBufferPool *av_buffer_pool_init3(int size, void *opaque,
+                                   AVBufferRef* (*alloc)(void *opaque, int size),
+                                   void (*get)(void *opaque, void *data),
+                                   void (*release)(void *opaque, void *data),
+                                   void (*pool_free)(void *opaque))
+{
+    AVBufferPool *pool = av_mallocz(sizeof(*pool));
+    if (!pool)
+        return NULL;
+
+    ff_mutex_init(&pool->mutex, NULL);
+
+    pool->size      = size;
+    pool->opaque    = opaque;
+    pool->alloc2    = alloc;
+    pool->pool_free = pool_free;
+
+    pool->get = get;
+    pool->release = release;
+
+    atomic_init(&pool->refcount, 1);
+
+    return pool;
+}
+
 AVBufferPool *av_buffer_pool_init(int size, AVBufferRef* (*alloc)(int size))
 {
     AVBufferPool *pool = av_mallocz(sizeof(*pool));
@@ -303,6 +328,9 @@ static void pool_release_buffer(void *opaque, uint8_t *data)
     BufferPoolEntry *buf = opaque;
     AVBufferPool *pool = buf->pool;
 
+    if (pool->release)
+        pool->release(pool->opaque, buf->data);
+
     if(CONFIG_MEMORY_POISONING)
         memset(buf->data, FF_MEMORY_POISON, pool->size);
 
@@ -365,6 +393,9 @@ AVBufferRef *av_buffer_pool_get(AVBufferPool *pool)
 
     if (ret)
         atomic_fetch_add_explicit(&pool->refcount, 1, memory_order_relaxed);
+
+    if (pool->get)
+        pool->get(pool->opaque, ret->data);
 
     return ret;
 }

@@ -545,6 +545,16 @@ static void v4l2_request_pool_free(void *opaque)
     av_log(NULL, AV_LOG_DEBUG, "%s: opaque=%p\n", __func__, opaque);
 }
 
+static void v4l2_request_frame_get(void *opaque, void *data)
+{
+    av_log(NULL, AV_LOG_DEBUG, "%s: opaque=%p data=%p\n", __func__, opaque, data);
+}
+
+static void v4l2_request_frame_release(void *opaque, void *data)
+{
+    av_log(NULL, AV_LOG_DEBUG, "%s: opaque=%p data=%p\n", __func__, opaque, data);
+}
+
 static void v4l2_request_hwframe_ctx_free(AVHWFramesContext *hwfc)
 {
     av_log(NULL, AV_LOG_DEBUG, "%s: hwfc=%p pool=%p\n", __func__, hwfc, hwfc->pool);
@@ -563,7 +573,7 @@ int ff_v4l2_request_frame_params(AVCodecContext *avctx, AVBufferRef *hw_frames_c
     hwfc->width = ctx->format.fmt.pix.width;
     hwfc->height = ctx->format.fmt.pix.height;
 
-    hwfc->pool = av_buffer_pool_init2(sizeof(V4L2RequestDescriptor), avctx, v4l2_request_frame_alloc, v4l2_request_pool_free);
+    hwfc->pool = av_buffer_pool_init3(sizeof(V4L2RequestDescriptor), avctx, v4l2_request_frame_alloc, v4l2_request_frame_get, v4l2_request_frame_release, v4l2_request_pool_free);
     if (!hwfc->pool)
         return AVERROR(ENOMEM);
 
