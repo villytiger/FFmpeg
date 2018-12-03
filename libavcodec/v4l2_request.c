@@ -572,7 +572,6 @@ int ff_v4l2_request_frame_params(AVCodecContext *avctx, AVBufferRef *hw_frames_c
     hwfc->initial_pool_size = 1;
 
     switch (avctx->codec_id) {
-    case AV_CODEC_ID_H264:
     case AV_CODEC_ID_HEVC:
         hwfc->initial_pool_size += 16;
         break;

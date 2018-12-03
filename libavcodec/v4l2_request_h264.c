@@ -20,28 +20,18 @@
 #include "hwaccel.h"
 #include "v4l2_request.h"
 
-static int v4l2_request_h264_start_frame(AVCodecContext *avctx,
-                                         av_unused const uint8_t *buffer,
-                                         av_unused uint32_t size)
-{
-    const H264Context *h = avctx->priv_data;
-
-    return ff_v4l2_request_reset_frame(avctx, h->cur_pic_ptr->f);
-}
-
-static int v4l2_request_h264_decode_slice(AVCodecContext *avctx, const uint8_t *buffer, uint32_t size)
-{
-    const H264Context *h = avctx->priv_data;
-
-    return ff_v4l2_request_append_output_buffer(avctx, h->cur_pic_ptr->f, buffer, size);
-}
+typedef struct V4L2RequestControlsH264 {
+    struct v4l2_ctrl_h264_sps sps;
+    struct v4l2_ctrl_h264_pps pps;
+    struct v4l2_ctrl_h264_scaling_matrix scaling_matrix;
+    struct v4l2_ctrl_h264_decode_param decode_params;
+    struct v4l2_ctrl_h264_slice_param slice_params;
+} V4L2RequestControlsH264;
 
 static void fill_single_pred_weight_table(const H264SliceContext *sl, int list,
                                           struct v4l2_h264_weight_factors *factors)
 {
-    unsigned int i, j;
-
-    for (i = 0; i < sl->ref_count[list]; i++) {
+    for (int i = 0; i < sl->ref_count[list]; i++) {
         if (sl->pwt.luma_weight_flag[list]) {
             factors->luma_weight[i] = sl->pwt.luma_weight[i][list][0];
             factors->luma_offset[i] = sl->pwt.luma_weight[i][list][1];
@@ -49,7 +39,7 @@ static void fill_single_pred_weight_table(const H264SliceContext *sl, int list,
             factors->luma_weight[i] = 1 << sl->pwt.luma_log2_weight_denom;
             factors->luma_offset[i] = 0;
         }
-        for (j = 0; j < 2; j++) {
+        for (int j = 0; j < 2; j++) {
             if (sl->pwt.chroma_weight_flag[list]) {
                 factors->chroma_weight[i][j] = sl->pwt.chroma_weight[i][list][j][0];
                 factors->chroma_offset[i][j] = sl->pwt.chroma_weight[i][list][j][1];
@@ -61,109 +51,82 @@ static void fill_single_pred_weight_table(const H264SliceContext *sl, int list,
     }
 }
 
-typedef struct DPB {
-    int                         size;
-    int                         max_size;
-    struct v4l2_h264_dpb_entry *entries;
-} DPB;
-
-static int dpb_add(DPB *dpb, const H264Picture *pic, int reference)
+static void dpb_add(struct v4l2_h264_dpb_entry *entry, const H264Picture *pic)
 {
-    struct v4l2_h264_dpb_entry *entry;
-    int buf_tag;
-    int i;
-
-    buf_tag = ff_v4l2_request_get_capture_tag(pic->f);
-
-    for (i = 0; i < dpb->size; i++)
-        if (dpb->entries[i].tag == buf_tag)
-            return 0;
-
-    if (dpb->size >= dpb->max_size)
-        return -1;
-
-    entry = &dpb->entries[dpb->size++];
-    entry->tag = buf_tag;
-    entry->frame_num = pic->long_ref ? pic->pic_id : pic->frame_num;
-    entry->flags = V4L2_H264_DPB_ENTRY_FLAG_VALID | V4L2_H264_DPB_ENTRY_FLAG_ACTIVE;
+    entry->tag = ff_v4l2_request_get_capture_tag(pic->f);
+    entry->frame_num = pic->frame_num;
+    entry->pic_num = pic->pic_id;
+    entry->flags = V4L2_H264_DPB_ENTRY_FLAG_VALID;
+    if (pic->reference)
+        entry->flags |= V4L2_H264_DPB_ENTRY_FLAG_ACTIVE;
     if (pic->long_ref)
         entry->flags |= V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM;
     entry->top_field_order_cnt = pic->field_poc[0];
     entry->bottom_field_order_cnt = pic->field_poc[1];
-
-    return 0;
 }
 
-static int fill_dpb(struct v4l2_ctrl_h264_decode_param *decode,
-                    const H264Context                  *h)
+static void fill_dpb(struct v4l2_ctrl_h264_decode_param *decode,
+                     const H264Context                  *h)
 {
-    DPB dpb;
-    int i;
+    int entries = 0;
 
-    dpb.size     = 0;
-    dpb.max_size = FF_ARRAY_ELEMS(decode->dpb);
-    dpb.entries  = decode->dpb;
-
-    for (i = 0; i < h->short_ref_count; i++) {
+    for (int i = 0; i < h->short_ref_count; i++) {
         const H264Picture *pic = h->short_ref[i];
-	if (pic && dpb_add(&dpb, pic, h->short_ref[i]->reference) < 0)
-            return -1;
+        if (pic)
+            dpb_add(&decode->dpb[entries++], pic);
     }
 
-    for (i = 0; i < 16; i++) {
+    if (!h->long_ref_count)
+        return;
+
+    for (int i = 0; i < FF_ARRAY_ELEMS(h->long_ref); i++) {
         const H264Picture *pic = h->long_ref[i];
-	if (pic && dpb_add(&dpb, pic, h->long_ref[i]->reference) < 0)
-            return -1;
+        if (pic)
+            dpb_add(&decode->dpb[entries++], pic);
     }
-
-    for (i = 0; i < FF_ARRAY_ELEMS(h->DPB); i++) {
-        const H264Picture *pic = &h->DPB[i];
-
-        if (pic != h->cur_pic_ptr && pic->f->buf[0])
-            dpb_add(&dpb, pic, pic->reference);
-    }
-
-    return 0;
 }
 
-static uint8_t get_ref_pic_index(const H264Picture *pic,
+static uint8_t get_ref_pic_index(const H264Ref *ref,
                                  struct v4l2_ctrl_h264_decode_param *decode)
 {
+    const H264Picture *pic = ref->parent;
     int frame_buf_tag;
     int frame_num;
+    int pic_num;
     uint8_t i;
 
     if (!pic)
         return 0;
 
     frame_buf_tag = ff_v4l2_request_get_capture_tag(pic->f);
-    frame_num = pic->long_ref ? pic->pic_id : pic->frame_num;
+    frame_num = pic->frame_num;
+    pic_num = pic->pic_id;
 
     for (i = 0; i < FF_ARRAY_ELEMS(decode->dpb); i++) {
         struct v4l2_h264_dpb_entry *entry = &decode->dpb[i];
-        if ((entry->flags & V4L2_H264_DPB_ENTRY_FLAG_VALID) && (entry->tag == frame_buf_tag) && (entry->frame_num == frame_num))
-            return i;
+        if ((entry->flags & V4L2_H264_DPB_ENTRY_FLAG_VALID) &&
+            (entry->tag == frame_buf_tag) &&
+            (entry->frame_num == frame_num) &&
+            (entry->pic_num == pic_num))
+            // TODO: signal reference type, possible using top 2 bits
+            return i /* | ((ref->reference & 3) << 6) */;
     }
 
     return 0;
 }
 
-static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
+static int v4l2_request_h264_start_frame(AVCodecContext *avctx,
+                                         av_unused const uint8_t *buffer,
+                                         av_unused uint32_t size)
 {
     const H264Context *h = avctx->priv_data;
-    V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->cur_pic_ptr->f->data[0];
-    struct v4l2_ctrl_h264_scaling_matrix matrix = { 0 };
-    struct v4l2_ctrl_h264_decode_param decode = { 0 };
-    struct v4l2_ctrl_h264_slice_param slice = { 0 };
-    struct v4l2_ctrl_h264_pps req_pps = { 0 };
-    struct v4l2_ctrl_h264_sps req_sps = { 0 };
-    struct v4l2_ext_control control[5];
-    const H264SliceContext *sl = &h->slice_ctx[0];
-    const SPS *sps = h->ps.sps;
     const PPS *pps = h->ps.pps;
-    int count, i;
+    const SPS *sps = h->ps.sps;
+    const H264SliceContext *sl = &h->slice_ctx[0];
+    V4L2RequestControlsH264 *controls = h->cur_pic_ptr->hwaccel_picture_private;
+    int i, count;
 
-    req_sps = (struct v4l2_ctrl_h264_sps) {
+    controls->sps = (struct v4l2_ctrl_h264_sps) {
         .profile_idc = sps->profile_idc,
         .constraint_set_flags = sps->constraint_set_flags,
         .level_idc = sps->level_idc,
@@ -174,30 +137,32 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
         .log2_max_frame_num_minus4 = sps->log2_max_frame_num - 4,
         .pic_order_cnt_type = sps->poc_type,
         .log2_max_pic_order_cnt_lsb_minus4 = sps->log2_max_poc_lsb - 4,
+        .max_num_ref_frames = sps->ref_frame_count,
+        .num_ref_frames_in_pic_order_cnt_cycle = sps->poc_cycle_length,
+        //.offset_for_ref_frame[255] - not required? not set by libva-v4l2-request - copy sps->offset_for_ref_frame
         .offset_for_non_ref_pic = sps->offset_for_non_ref_pic,
         .offset_for_top_to_bottom_field = sps->offset_for_top_to_bottom_field,
-        .num_ref_frames_in_pic_order_cnt_cycle = sps->poc_cycle_length,
-        //.offset_for_ref_frame[255] - not required? not set by libva-v4l2-request
-        .max_num_ref_frames = 0, // what is this? not set by libva-v4l2-request
         .pic_width_in_mbs_minus1 = h->mb_width - 1,
-	.pic_height_in_map_units_minus1 = sps->frame_mbs_only_flag ? h->mb_height - 1 : h->mb_height / 2 - 1,
+        .pic_height_in_map_units_minus1 = sps->frame_mbs_only_flag ? h->mb_height - 1 : h->mb_height / 2 - 1,
     };
 
     if (sps->residual_color_transform_flag)
-        req_sps.flags |= V4L2_H264_SPS_FLAG_SEPARATE_COLOUR_PLANE;
-    if (sps->gaps_in_frame_num_allowed_flag)
-        req_sps.flags |= V4L2_H264_SPS_FLAG_GAPS_IN_FRAME_NUM_VALUE_ALLOWED;
-    if (sps->frame_mbs_only_flag)
-        req_sps.flags |= V4L2_H264_SPS_FLAG_FRAME_MBS_ONLY;
-    if (sps->mb_aff)
-        req_sps.flags |= V4L2_H264_SPS_FLAG_MB_ADAPTIVE_FRAME_FIELD;
-    if (sps->direct_8x8_inference_flag)
-        req_sps.flags |= V4L2_H264_SPS_FLAG_DIRECT_8X8_INFERENCE;
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_SEPARATE_COLOUR_PLANE;
+    if (sps->transform_bypass)
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_QPPRIME_Y_ZERO_TRANSFORM_BYPASS;
     if (sps->delta_pic_order_always_zero_flag)
-        req_sps.flags |= V4L2_H264_SPS_FLAG_DELTA_PIC_ORDER_ALWAYS_ZERO;
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_DELTA_PIC_ORDER_ALWAYS_ZERO;
+    if (sps->gaps_in_frame_num_allowed_flag)
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_GAPS_IN_FRAME_NUM_VALUE_ALLOWED;
+    if (sps->frame_mbs_only_flag)
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_FRAME_MBS_ONLY;
+    if (sps->mb_aff)
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_MB_ADAPTIVE_FRAME_FIELD;
+    if (sps->direct_8x8_inference_flag)
+        controls->sps.flags |= V4L2_H264_SPS_FLAG_DIRECT_8X8_INFERENCE;
 
-    req_pps = (struct v4l2_ctrl_h264_pps) {
-        .pic_parameter_set_id = 0, /* not needed? not present anywhere? */
+    controls->pps = (struct v4l2_ctrl_h264_pps) {
+        .pic_parameter_set_id = sl->pps_id,
         .seq_parameter_set_id = pps->sps_id,
         .num_slice_groups_minus1 = pps->slice_group_count - 1,
         .num_ref_idx_l0_default_active_minus1 = pps->ref_count[0] - 1,
@@ -210,31 +175,25 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
     };
 
     if (pps->cabac)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_ENTROPY_CODING_MODE;
-
-    if (pps->weighted_pred)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_WEIGHTED_PRED;
-
-    if (pps->transform_8x8_mode)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE;
-
-    if (pps->constrained_intra_pred)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_CONSTRAINED_INTRA_PRED;
-
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_ENTROPY_CODING_MODE;
     if (pps->pic_order_present)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_BOTTOM_FIELD_PIC_ORDER_IN_FRAME_PRESENT;
-
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_BOTTOM_FIELD_PIC_ORDER_IN_FRAME_PRESENT;
+    if (pps->weighted_pred)
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_WEIGHTED_PRED;
     if (pps->deblocking_filter_parameters_present)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_DEBLOCKING_FILTER_CONTROL_PRESENT;
-
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_DEBLOCKING_FILTER_CONTROL_PRESENT;
+    if (pps->constrained_intra_pred)
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_CONSTRAINED_INTRA_PRED;
     if (pps->redundant_pic_cnt_present)
-        req_pps.flags |= V4L2_H264_PPS_FLAG_REDUNDANT_PIC_CNT_PRESENT;
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_REDUNDANT_PIC_CNT_PRESENT;
+    if (pps->transform_8x8_mode)
+        controls->pps.flags |= V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE;
 
-    memcpy(matrix.scaling_list_4x4, pps->scaling_matrix4, sizeof(matrix.scaling_list_4x4));
-    memcpy(matrix.scaling_list_8x8, pps->scaling_matrix8, sizeof(matrix.scaling_list_8x8));
+    memcpy(controls->scaling_matrix.scaling_list_4x4, pps->scaling_matrix4, sizeof(controls->scaling_matrix.scaling_list_4x4));
+    memcpy(controls->scaling_matrix.scaling_list_8x8, pps->scaling_matrix8, sizeof(controls->scaling_matrix.scaling_list_8x8));
 
-    decode = (struct v4l2_ctrl_h264_decode_param) {
-        .num_slices = 1, /* TODO */
+    controls->decode_params = (struct v4l2_ctrl_h264_decode_param) {
+        .num_slices = 0,
         .idr_pic_flag = h->picture_idr,
         .nal_ref_idc = h->nal_ref_idc,
         .top_field_order_cnt = h->cur_pic_ptr->field_poc[0],
@@ -244,12 +203,15 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
         //.ref_pic_list_b1[32]  - not required? not set by libva-v4l2-request
     };
 
-    fill_dpb(&decode, h);
+    fill_dpb(&controls->decode_params, h);
 
-    slice = (struct v4l2_ctrl_h264_slice_param) {
-        .size = req->output.used,
+    controls->slice_params = (struct v4l2_ctrl_h264_slice_param) {
+        /* Size in bytes, including header */
+        .size = 0,
+        /* Offset in bits to slice_data() from the beginning of this slice. */
         .header_bit_size = get_bits_count(&sl->gb),
-        .first_mb_in_slice = (sl->mb_y >> FIELD_OR_MBAFF_PICTURE(h)) * h->mb_width + sl->mb_x,
+
+        .first_mb_in_slice = sl->first_mb_addr,
         .slice_type = ff_h264_get_slice_type(sl),
         .pic_parameter_set_id = sl->pps_id,
         .colour_plane_id = 0, /* what is this? */
@@ -266,9 +228,9 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
         /* Size in bits of pic order count syntax. */
         .pic_order_cnt_bit_size = 0,
 
-	.cabac_init_idc = h->ps.pps->cabac ? sl->cabac_init_idc : 0,
+        .cabac_init_idc = sl->cabac_init_idc,
         .slice_qp_delta = sl->qscale - pps->init_qp,
-	.slice_qs_delta = 0, /* XXX not implemented by FFmpeg */
+        .slice_qs_delta = 0, /* XXX not implemented by FFmpeg */
         .disable_deblocking_filter_idc = sl->deblocking_filter < 2 ? !sl->deblocking_filter : sl->deblocking_filter,
         .slice_alpha_c0_offset_div2 = sl->slice_alpha_c0_offset / 2,
         .slice_beta_offset_div2 = sl->slice_beta_offset / 2,
@@ -278,50 +240,78 @@ static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
         .num_ref_idx_l1_active_minus1 = sl->list_count > 1 ? sl->ref_count[1] - 1 : 0,
     };
 
+    if (FIELD_PICTURE(h))
+        controls->slice_params.flags |= V4L2_H264_SLICE_FLAG_FIELD_PIC;
+    if (h->picture_structure == PICT_BOTTOM_FIELD)
+        controls->slice_params.flags |= V4L2_H264_SLICE_FLAG_BOTTOM_FIELD;
     if (sl->slice_type == AV_PICTURE_TYPE_B && sl->direct_spatial_mv_pred)
-        slice.flags |= V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED;
-    if ((h->picture_structure & PICT_FRAME) != PICT_FRAME) {
-        slice.flags |= V4L2_H264_SLICE_FLAG_FIELD_PIC;
-        if (h->picture_structure & PICT_BOTTOM_FIELD)
-            slice.flags |= V4L2_H264_SLICE_FLAG_BOTTOM_FIELD;
-    }
+        controls->slice_params.flags |= V4L2_H264_SLICE_FLAG_DIRECT_SPATIAL_MV_PRED;
 
-    slice.pred_weight_table.chroma_log2_weight_denom = sl->pwt.chroma_log2_weight_denom;
-    slice.pred_weight_table.luma_log2_weight_denom = sl->pwt.luma_log2_weight_denom;
+    controls->slice_params.pred_weight_table.chroma_log2_weight_denom = sl->pwt.chroma_log2_weight_denom;
+    controls->slice_params.pred_weight_table.luma_log2_weight_denom = sl->pwt.luma_log2_weight_denom;
 
     count = sl->list_count > 0 ? sl->ref_count[0] : 0;
     for (i = 0; i < count; i++)
-        slice.ref_pic_list0[i] = get_ref_pic_index(sl->ref_list[0][i].parent, &decode);
+        controls->slice_params.ref_pic_list0[i] = get_ref_pic_index(&sl->ref_list[0][i], &controls->decode_params);
     if (count)
-        fill_single_pred_weight_table(sl, 0, &slice.pred_weight_table.weight_factors[0]);
+        fill_single_pred_weight_table(sl, 0, &controls->slice_params.pred_weight_table.weight_factors[0]);
 
     count = sl->list_count > 1 ? sl->ref_count[1] : 0;
     for (i = 0; i < count; i++)
-        slice.ref_pic_list1[i] = get_ref_pic_index(sl->ref_list[1][i].parent, &decode);
+        controls->slice_params.ref_pic_list1[i] = get_ref_pic_index(&sl->ref_list[1][i], &controls->decode_params);
     if (count)
-        fill_single_pred_weight_table(sl, 1, &slice.pred_weight_table.weight_factors[1]);
+        fill_single_pred_weight_table(sl, 1, &controls->slice_params.pred_weight_table.weight_factors[1]);
 
-    control[0].id = V4L2_CID_MPEG_VIDEO_H264_SPS;
-    control[0].ptr = &req_sps;
-    control[0].size = sizeof(req_sps);
+    return ff_v4l2_request_reset_frame(avctx, h->cur_pic_ptr->f);
+}
 
-    control[1].id = V4L2_CID_MPEG_VIDEO_H264_PPS;
-    control[1].ptr = &req_pps;
-    control[1].size = sizeof(req_pps);
+static int v4l2_request_h264_decode_slice(AVCodecContext *avctx, const uint8_t *buffer, uint32_t size)
+{
+    const H264Context *h = avctx->priv_data;
+    V4L2RequestControlsH264 *controls = h->cur_pic_ptr->hwaccel_picture_private;
 
-    control[2].id = V4L2_CID_MPEG_VIDEO_H264_SCALING_MATRIX;
-    control[2].ptr = &matrix;
-    control[2].size = sizeof(matrix);
+    controls->decode_params.num_slices++;
 
-    control[3].id = V4L2_CID_MPEG_VIDEO_H264_SLICE_PARAMS;
-    control[3].ptr = &slice;
-    control[3].size = sizeof(slice);
+    return ff_v4l2_request_append_output_buffer(avctx, h->cur_pic_ptr->f, buffer, size);
+}
 
-    control[4].id = V4L2_CID_MPEG_VIDEO_H264_DECODE_PARAMS;
-    control[4].ptr = &decode;
-    control[4].size = sizeof(decode);
+static int v4l2_request_h264_end_frame(AVCodecContext *avctx)
+{
+    const H264Context *h = avctx->priv_data;
+    V4L2RequestControlsH264 *controls = h->cur_pic_ptr->hwaccel_picture_private;
+    V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->cur_pic_ptr->f->data[0];
 
-    return ff_v4l2_request_decode_frame(avctx, h->cur_pic_ptr->f, control, 5);
+    struct v4l2_ext_control control[] = {
+        {
+            .id = V4L2_CID_MPEG_VIDEO_H264_SPS,
+            .ptr = &controls->sps,
+            .size = sizeof(controls->sps),
+        },
+        {
+            .id = V4L2_CID_MPEG_VIDEO_H264_PPS,
+            .ptr = &controls->pps,
+            .size = sizeof(controls->pps),
+        },
+        {
+            .id = V4L2_CID_MPEG_VIDEO_H264_SCALING_MATRIX,
+            .ptr = &controls->scaling_matrix,
+            .size = sizeof(controls->scaling_matrix),
+        },
+        {
+            .id = V4L2_CID_MPEG_VIDEO_H264_SLICE_PARAMS,
+            .ptr = &controls->slice_params,
+            .size = sizeof(controls->slice_params),
+        },
+        {
+            .id = V4L2_CID_MPEG_VIDEO_H264_DECODE_PARAMS,
+            .ptr = &controls->decode_params,
+            .size = sizeof(controls->decode_params),
+        },
+    };
+
+    controls->slice_params.size = req->output.used;
+
+    return ff_v4l2_request_decode_frame(avctx, h->cur_pic_ptr->f, control, FF_ARRAY_ELEMS(control));
 }
 
 static int v4l2_request_h264_init(AVCodecContext *avctx)
@@ -337,6 +327,7 @@ const AVHWAccel ff_h264_v4l2request_hwaccel = {
     .start_frame    = v4l2_request_h264_start_frame,
     .decode_slice   = v4l2_request_h264_decode_slice,
     .end_frame      = v4l2_request_h264_end_frame,
+    .frame_priv_data_size = sizeof(V4L2RequestControlsH264),
     .init           = v4l2_request_h264_init,
     .uninit         = ff_v4l2_request_uninit,
     .priv_data_size = sizeof(V4L2RequestContext),
