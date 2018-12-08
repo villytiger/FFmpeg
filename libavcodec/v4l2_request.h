@@ -48,7 +48,7 @@ typedef struct V4L2RequestDescriptor {
     V4L2RequestBuffer capture;
 } V4L2RequestDescriptor;
 
-int ff_v4l2_request_get_capture_tag(AVFrame *frame);
+uint32_t ff_v4l2_request_get_capture_tag(AVFrame *frame);
 
 int ff_v4l2_request_reset_frame(AVCodecContext *avctx, AVFrame *frame);
 

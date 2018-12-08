@@ -30,7 +30,7 @@
 #define V4L2_REQUEST_VIDEO_PATH "/dev/video0"
 #define V4L2_REQUEST_MEDIA_PATH "/dev/media0"
 
-int ff_v4l2_request_get_capture_tag(AVFrame *frame)
+uint32_t ff_v4l2_request_get_capture_tag(AVFrame *frame)
 {
     V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)frame->data[0];
     return req ? req->capture.index : 0;
