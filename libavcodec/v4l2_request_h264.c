@@ -256,13 +256,13 @@ static int v4l2_request_h264_decode_slice(AVCodecContext *avctx, const uint8_t *
     V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->cur_pic_ptr->f->data[0];
     int i, count;
 
-    controls->decode_params.num_slices++;
-
     // HACK: trigger decode per slice
     if (req->output.used) {
         v4l2_request_h264_end_frame(avctx);
         ff_v4l2_request_reset_frame(avctx, h->cur_pic_ptr->f);
     }
+
+    controls->decode_params.num_slices++;
 
     controls->slice_params = (struct v4l2_ctrl_h264_slice_param) {
         /* Size in bytes, including header */
