@@ -20,21 +20,10 @@
 #include "hwaccel.h"
 #include "v4l2_request.h"
 
-/*
-struct v4l2_ctrl_hevc_scaling_matrix {
-    uint8_t scaling_list_4x4[6][16];
-    uint8_t scaling_list_8x8[6][64];
-    uint8_t scaling_list_16x16[6][64];
-    uint8_t scaling_list_32x32[2][64];
-    uint8_t scaling_list_dc_coef_16x16[6];
-    uint8_t scaling_list_dc_coef_32x32[2];
-};
-*/
-
 typedef struct V4L2RequestControlsHEVC {
     struct v4l2_ctrl_hevc_sps sps;
     struct v4l2_ctrl_hevc_pps pps;
-    //struct v4l2_ctrl_hevc_scaling_matrix scaling_matrix;
+    struct v4l2_ctrl_hevc_scaling_matrix scaling_matrix;
     struct v4l2_ctrl_hevc_slice_params slice_params;
 } V4L2RequestControlsHEVC;
 
@@ -174,6 +163,8 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
         .num_rps_poc_st_curr_before = h->rps[ST_CURR_BEF].nb_refs,
         .num_rps_poc_st_curr_after = h->rps[ST_CURR_AFT].nb_refs,
         .num_rps_poc_lt_curr = h->rps[LT_CURR].nb_refs,
+
+        .slice_segment_addr = sh->slice_segment_addr,
     };
 
     for (i = 0; i < FF_ARRAY_ELEMS(h->DPB); i++) {
@@ -206,6 +197,15 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
     }
 
     v4l2_request_hevc_fill_pred_table(h, &slice_params->pred_weight_table);
+
+    slice_params->num_entry_point_offsets = sh->num_entry_point_offsets;
+    if (slice_params->num_entry_point_offsets > 256) {
+        slice_params->num_entry_point_offsets = 256;
+        av_log(NULL, AV_LOG_ERROR, "%s: Currently only 256 entry points are supported, but slice has %d entry points.\n", __func__, sh->num_entry_point_offsets);
+    }
+
+    for (i = 0; i < slice_params->num_entry_point_offsets; i++)
+        slice_params->entry_point_offset_minus1[i] = sh->entry_point_offset[i] - 1;
 }
 
 static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
@@ -215,10 +215,10 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
     const HEVCContext *h = avctx->priv_data;
     const HEVCSPS *sps = h->ps.sps;
     const HEVCPPS *pps = h->ps.pps;
-    //const ScalingList *sl = pps->scaling_list_data_present_flag ?
-    //                        &pps->scaling_list :
-    //                        sps->scaling_list_enable_flag ?
-    //                        &sps->scaling_list : NULL;
+    const ScalingList *sl = pps->scaling_list_data_present_flag ?
+                            &pps->scaling_list :
+                            sps->scaling_list_enable_flag ?
+                            &sps->scaling_list : NULL;
     V4L2RequestControlsHEVC *controls = h->ref->hwaccel_picture_private;
 
     /* ISO/IEC 23008-2, ITU-T Rec. H.265: Sequence parameter set */
@@ -255,7 +255,6 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
         .strong_intra_smoothing_enabled_flag = sps->sps_strong_intra_smoothing_enable_flag,
     };
 
-    /*
     if (sl) {
         for (int i = 0; i < 6; i++) {
             for (int j = 0; j < 16; j++)
@@ -271,7 +270,6 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
                 controls->scaling_matrix.scaling_list_dc_coef_32x32[i] = sl->sl_dc[1][i * 3];
         }
     }
-    */
 
     /* ISO/IEC 23008-2, ITU-T Rec. H.265: Picture parameter set */
     controls->pps = (struct v4l2_ctrl_hevc_pps) {
@@ -302,6 +300,7 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
         .lists_modification_present_flag = pps->lists_modification_present_flag,
         .log2_parallel_merge_level_minus2 = pps->log2_parallel_merge_level - 2,
         .slice_segment_header_extension_present_flag = pps->slice_header_extension_present_flag,
+        .scaling_list_enable_flag = pps->scaling_list_data_present_flag, // pps_scaling_list_data_present_flag
     };
 
     if (pps->tiles_enabled_flag) {
@@ -317,16 +316,7 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
             controls->pps.row_height_minus1[i] = pps->row_height[i] - 1;
     }
 
-    v4l2_request_hevc_fill_slice_params(h, &controls->slice_params);
-
     return ff_v4l2_request_reset_frame(avctx, h->ref->frame);
-}
-
-static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *buffer, uint32_t size)
-{
-    const HEVCContext *h = avctx->priv_data;
-
-    return ff_v4l2_request_append_output_buffer(avctx, h->ref->frame, buffer, size);
 }
 
 static int v4l2_request_hevc_end_frame(AVCodecContext *avctx)
@@ -346,13 +336,11 @@ static int v4l2_request_hevc_end_frame(AVCodecContext *avctx)
             .ptr = &controls->pps,
             .size = sizeof(controls->pps),
         },
-        /*
         {
             .id = V4L2_CID_MPEG_VIDEO_HEVC_SCALING_MATRIX,
             .ptr = &controls->scaling_matrix,
             .size = sizeof(controls->scaling_matrix),
         },
-        */
         {
             .id = V4L2_CID_MPEG_VIDEO_HEVC_SLICE_PARAMS,
             .ptr = &controls->slice_params,
@@ -363,6 +351,23 @@ static int v4l2_request_hevc_end_frame(AVCodecContext *avctx)
     controls->slice_params.bit_size = req->output.used * 8;
 
     return ff_v4l2_request_decode_frame(avctx, h->ref->frame, control, FF_ARRAY_ELEMS(control));
+}
+
+static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *buffer, uint32_t size)
+{
+    const HEVCContext *h = avctx->priv_data;
+    V4L2RequestControlsHEVC *controls = h->ref->hwaccel_picture_private;
+    V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->ref->frame->data[0];
+
+    // HACK: trigger decode per slice
+    if (req->output.used) {
+        v4l2_request_hevc_end_frame(avctx);
+        ff_v4l2_request_reset_frame(avctx, h->ref->frame);
+    }
+
+    v4l2_request_hevc_fill_slice_params(h, &controls->slice_params);
+
+    return ff_v4l2_request_append_output_buffer(avctx, h->ref->frame, buffer, size);
 }
 
 static int v4l2_request_hevc_init(AVCodecContext *avctx)
