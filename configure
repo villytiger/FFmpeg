@@ -2844,6 +2844,8 @@ mpeg2_dxva2_hwaccel_deps="dxva2"
 mpeg2_dxva2_hwaccel_select="mpeg2video_decoder"
 mpeg2_nvdec_hwaccel_deps="nvdec"
 mpeg2_nvdec_hwaccel_select="mpeg2video_decoder"
+mpeg2_v4l2request_hwaccel_deps="v4l2_request mpeg2_v4l2_request"
+mpeg2_v4l2request_hwaccel_select="mpeg2video_decoder"
 mpeg2_vaapi_hwaccel_deps="vaapi"
 mpeg2_vaapi_hwaccel_select="mpeg2video_decoder"
 mpeg2_vdpau_hwaccel_deps="vdpau"
@@ -6235,6 +6237,7 @@ check_cc vp9_v4l2_m2m linux/videodev2.h "int i = V4L2_PIX_FMT_VP9;"
 
 check_header linux/media.h
 check_cc v4l2_request linux/media.h "unsigned long i = MEDIA_IOC_REQUEST_ALLOC;"
+check_cc mpeg2_v4l2_request linux/videodev2.h "int i = V4L2_PIX_FMT_MPEG2_SLICE;"
 
 check_header sys/videoio.h
 test_code cc sys/videoio.h "struct v4l2_frmsizeenum vfse; vfse.discrete.width = 0;" && enable_sanitized struct_v4l2_frmivalenum_discrete
