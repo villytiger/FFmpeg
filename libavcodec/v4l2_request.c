@@ -69,6 +69,7 @@ static int v4l2_request_set_controls(V4L2RequestContext *ctx, int request_fd, st
 
 static int v4l2_request_queue_buffer(V4L2RequestContext *ctx, int request_fd, V4L2RequestBuffer *buf)
 {
+    struct v4l2_plane planes[1] = {};
     struct v4l2_buffer buffer = {
         .type = buf->buffer.type,
         .memory = buf->buffer.memory,
@@ -79,17 +80,30 @@ static int v4l2_request_queue_buffer(V4L2RequestContext *ctx, int request_fd, V4
         .flags = (request_fd >= 0) ? V4L2_BUF_FLAG_REQUEST_FD : 0,
     };
 
+    if (V4L2_TYPE_IS_MULTIPLANAR(buf->buffer.type)) {
+        planes[0].bytesused = buf->used;
+        buffer.bytesused = 0;
+        buffer.length = 1;
+        buffer.m.planes = planes;
+    }
+
     return ioctl(ctx->video_fd, VIDIOC_QBUF, &buffer);
 }
 
 static int v4l2_request_dequeue_buffer(V4L2RequestContext *ctx, V4L2RequestBuffer *buf)
 {
     int ret;
+    struct v4l2_plane planes[1] = {};
     struct v4l2_buffer buffer = {
         .type = buf->buffer.type,
         .memory = buf->buffer.memory,
         .index = buf->index,
     };
+
+    if (V4L2_TYPE_IS_MULTIPLANAR(buf->buffer.type)) {
+        buffer.length = 1;
+        buffer.m.planes = planes;
+    }
 
     ret = ioctl(ctx->video_fd, VIDIOC_DQBUF, &buffer);
     if (ret < 0)
@@ -110,8 +124,9 @@ static int v4l2_request_set_drm_descriptor(V4L2RequestDescriptor *req, struct v4
 {
     AVDRMFrameDescriptor *desc = &req->drm;
     AVDRMLayerDescriptor *layer = &desc->layers[0];
+    uint32_t pixelformat = V4L2_TYPE_IS_MULTIPLANAR(format->type) ? format->fmt.pix_mp.pixelformat : format->fmt.pix.pixelformat;
 
-    switch (format->fmt.pix.pixelformat) {
+    switch (pixelformat) {
     case V4L2_PIX_FMT_NV12:
         layer->format = DRM_FORMAT_NV12;
         desc->objects[0].format_modifier = DRM_FORMAT_MOD_LINEAR;
@@ -135,10 +150,10 @@ static int v4l2_request_set_drm_descriptor(V4L2RequestDescriptor *req, struct v4
 
     layer->planes[0].object_index = 0;
     layer->planes[0].offset = 0;
-    layer->planes[0].pitch = format->fmt.pix.bytesperline;
+    layer->planes[0].pitch = V4L2_TYPE_IS_MULTIPLANAR(format->type) ? format->fmt.pix_mp.plane_fmt[0].bytesperline : format->fmt.pix.bytesperline;
 
     layer->planes[1].object_index = 0;
-    layer->planes[1].offset = layer->planes[0].pitch * format->fmt.pix.height;
+    layer->planes[1].offset = layer->planes[0].pitch * (V4L2_TYPE_IS_MULTIPLANAR(format->type) ? format->fmt.pix_mp.height : format->fmt.pix.height);
     layer->planes[1].pitch = layer->planes[0].pitch;
 
     return 0;
@@ -238,10 +253,18 @@ static int v4l2_request_set_format(AVCodecContext *avctx, enum v4l2_buf_type typ
     struct v4l2_format format = {0};
 
     format.type = type;
-    format.fmt.pix.width = avctx->coded_width;
-    format.fmt.pix.height = avctx->coded_height;
-    format.fmt.pix.pixelformat = pixelformat;
-    format.fmt.pix.sizeimage = buffersize;
+    if (V4L2_TYPE_IS_MULTIPLANAR(type)) {
+        format.fmt.pix_mp.width = avctx->coded_width;
+        format.fmt.pix_mp.height = avctx->coded_height;
+        format.fmt.pix_mp.pixelformat = pixelformat;
+        format.fmt.pix_mp.plane_fmt[0].sizeimage = buffersize;
+        format.fmt.pix_mp.num_planes = 1;
+    } else {
+        format.fmt.pix.width = avctx->coded_width;
+        format.fmt.pix.height = avctx->coded_height;
+        format.fmt.pix.pixelformat = pixelformat;
+        format.fmt.pix.sizeimage = buffersize;
+    }
 
     return ioctl(ctx->video_fd, VIDIOC_S_FMT, &format);
 }
@@ -306,15 +329,17 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
         goto fail;
     }
 
-    // TODO: V4L2_CAP_VIDEO_M2M_MPLANE support
-    if ((capabilities & V4L2_CAP_VIDEO_M2M) != V4L2_CAP_VIDEO_M2M) {
+    if ((capabilities & V4L2_CAP_VIDEO_M2M_MPLANE) == V4L2_CAP_VIDEO_M2M_MPLANE) {
+        ctx->output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+        ctx->format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    } else if ((capabilities & V4L2_CAP_VIDEO_M2M) == V4L2_CAP_VIDEO_M2M) {
+        ctx->output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        ctx->format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    } else {
         av_log(avctx, AV_LOG_ERROR, "%s: missing required mem2mem capability\n", __func__);
         ret = AVERROR(EINVAL);
         goto fail;
     }
-
-    ctx->output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-    ctx->format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
     ret = v4l2_request_set_format(avctx, ctx->output_type, pixelformat, buffersize);
     if (ret < 0) {
@@ -344,7 +369,11 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
         goto fail;
     }
 
-    av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u\n", __func__, ctx->format.fmt.pix.pixelformat, ctx->format.fmt.pix.width, ctx->format.fmt.pix.height, ctx->format.fmt.pix.bytesperline, ctx->format.fmt.pix.sizeimage);
+    if (V4L2_TYPE_IS_MULTIPLANAR(ctx->format.type)) {
+        av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u\n", __func__, ctx->format.fmt.pix_mp.pixelformat, ctx->format.fmt.pix_mp.width, ctx->format.fmt.pix_mp.height, ctx->format.fmt.pix_mp.plane_fmt[0].bytesperline, ctx->format.fmt.pix_mp.plane_fmt[0].sizeimage);
+    } else {
+        av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u\n", __func__, ctx->format.fmt.pix.pixelformat, ctx->format.fmt.pix.width, ctx->format.fmt.pix.height, ctx->format.fmt.pix.bytesperline, ctx->format.fmt.pix.sizeimage);
+    }
 
     ret = ff_decode_get_hw_frames_ctx(avctx, AV_HWDEVICE_TYPE_DRM);
     if (ret < 0)
@@ -407,6 +436,7 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
     struct v4l2_create_buffers buffers = {0};
+    struct v4l2_plane planes[1] = {};
     int ret;
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p buf=%p type=%u\n", __func__, avctx, buf, type);
@@ -428,9 +458,17 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
     }
 
     buf->index = buffers.index;
-    buf->width = buffers.format.fmt.pix.width;
-    buf->height = buffers.format.fmt.pix.height;
-    buf->size = buffers.format.fmt.pix.sizeimage;
+    if (V4L2_TYPE_IS_MULTIPLANAR(type)) {
+        buf->width = buffers.format.fmt.pix_mp.width;
+        buf->height = buffers.format.fmt.pix_mp.height;
+        buf->size = buffers.format.fmt.pix_mp.plane_fmt[0].sizeimage;
+        buf->buffer.length = 1;
+        buf->buffer.m.planes = planes;
+    } else {
+        buf->width = buffers.format.fmt.pix.width;
+        buf->height = buffers.format.fmt.pix.height;
+        buf->size = buffers.format.fmt.pix.sizeimage;
+    }
     buf->used = 0;
 
     buf->buffer.type = type;
@@ -445,7 +483,7 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
     }
 
     if (V4L2_TYPE_IS_OUTPUT(type)) {
-        void *addr = mmap(NULL, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->video_fd, buf->buffer.m.offset);
+        void *addr = mmap(NULL, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->video_fd, V4L2_TYPE_IS_MULTIPLANAR(type) ? buf->buffer.m.planes[0].m.mem_offset : buf->buffer.m.offset);
         if (addr == MAP_FAILED) {
             av_log(avctx, AV_LOG_ERROR, "%s: mmap failed, %s (%d)\n", __func__, strerror(errno), errno);
             return -1;
@@ -567,8 +605,13 @@ int ff_v4l2_request_frame_params(AVCodecContext *avctx, AVBufferRef *hw_frames_c
 
     hwfc->format = AV_PIX_FMT_DRM_PRIME;
     hwfc->sw_format = AV_PIX_FMT_NV12;
-    hwfc->width = ctx->format.fmt.pix.width;
-    hwfc->height = ctx->format.fmt.pix.height;
+    if (V4L2_TYPE_IS_MULTIPLANAR(ctx->format.type)) {
+        hwfc->width = ctx->format.fmt.pix_mp.width;
+        hwfc->height = ctx->format.fmt.pix_mp.height;
+    } else {
+        hwfc->width = ctx->format.fmt.pix.width;
+        hwfc->height = ctx->format.fmt.pix.height;
+    }
 
     hwfc->pool = av_buffer_pool_init2(sizeof(V4L2RequestDescriptor), avctx, v4l2_request_frame_alloc, v4l2_request_pool_free);
     if (!hwfc->pool)
