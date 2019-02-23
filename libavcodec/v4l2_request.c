@@ -247,12 +247,50 @@ fail:
     return -1;
 }
 
+static int v4l2_request_try_format(AVCodecContext *avctx, enum v4l2_buf_type type, uint32_t pixelformat)
+{
+    V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+    struct v4l2_fmtdesc fmtdesc = {
+        .index = 0,
+        .type = type,
+    };
+
+    if (V4L2_TYPE_IS_OUTPUT(type)) {
+        struct v4l2_create_buffers buffers = {
+            .count = 0,
+            .memory = V4L2_MEMORY_MMAP,
+            .format.type = type,
+        };
+
+        if (ioctl(ctx->video_fd, VIDIOC_CREATE_BUFS, &buffers) < 0) {
+            av_log(avctx, AV_LOG_ERROR, "%s: create buffers failed for type %u, %s (%d)\n", __func__, type, strerror(errno), errno);
+            return -1;
+        }
+
+        if ((buffers.capabilities & V4L2_BUF_CAP_SUPPORTS_REQUESTS) != V4L2_BUF_CAP_SUPPORTS_REQUESTS) {
+            av_log(avctx, AV_LOG_INFO, "%s: output buffer type do not support requests, capabilities %u\n", __func__, buffers.capabilities);
+            return -1;
+        }
+    }
+
+    while (ioctl(ctx->video_fd, VIDIOC_ENUM_FMT, &fmtdesc) >= 0) {
+        if (fmtdesc.pixelformat == pixelformat)
+            return 0;
+
+        fmtdesc.index++;
+    }
+
+    av_log(avctx, AV_LOG_INFO, "%s: pixelformat %u not supported for type %u\n", __func__, pixelformat, type);
+    return -1;
+}
+
 static int v4l2_request_set_format(AVCodecContext *avctx, enum v4l2_buf_type type, uint32_t pixelformat, uint32_t buffersize)
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
-    struct v4l2_format format = {0};
+    struct v4l2_format format = {
+        .type = type,
+    };
 
-    format.type = type;
     if (V4L2_TYPE_IS_MULTIPLANAR(type)) {
         format.fmt.pix_mp.width = avctx->coded_width;
         format.fmt.pix_mp.height = avctx->coded_height;
@@ -288,14 +326,7 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p hw_device_ctx=%p hw_frames_ctx=%p\n", __func__, avctx, ctx, avctx->hw_device_ctx, avctx->hw_frames_ctx);
 
-    ctx->video_fd = open(V4L2_REQUEST_VIDEO_PATH, O_RDWR | O_NONBLOCK, 0);
-    if (ctx->video_fd < 0) {
-        av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, V4L2_REQUEST_VIDEO_PATH, strerror(errno), errno);
-        ret = AVERROR(EINVAL);
-        goto fail;
-    }
-
-    ctx->media_fd = open(V4L2_REQUEST_MEDIA_PATH, O_RDWR | O_NONBLOCK, 0);
+    ctx->media_fd = open(V4L2_REQUEST_MEDIA_PATH, O_RDWR, 0);
     if (ctx->media_fd < 0) {
         av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, V4L2_REQUEST_MEDIA_PATH, strerror(errno), errno);
         ret = AVERROR(EINVAL);
@@ -310,6 +341,13 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
     }
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p driver=%s\n", __func__, avctx, ctx, device_info.driver);
+
+    ctx->video_fd = open(V4L2_REQUEST_VIDEO_PATH, O_RDWR | O_NONBLOCK, 0);
+    if (ctx->video_fd < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, V4L2_REQUEST_VIDEO_PATH, strerror(errno), errno);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
 
     ret = ioctl(ctx->video_fd, VIDIOC_QUERYCAP, &capability);
     if (ret < 0) {
@@ -341,9 +379,9 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
         goto fail;
     }
 
-    ret = v4l2_request_set_format(avctx, ctx->output_type, pixelformat, buffersize);
+    ret = v4l2_request_try_format(avctx, ctx->output_type, pixelformat);
     if (ret < 0) {
-        av_log(avctx, AV_LOG_ERROR, "%s: set output format failed, %s (%d)\n", __func__, strerror(errno), errno);
+        av_log(avctx, AV_LOG_ERROR, "%s: try output format failed\n", __func__);
         ret = AVERROR(EINVAL);
         goto fail;
     }
@@ -355,9 +393,16 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
         goto fail;
     }
 
+    ret = v4l2_request_set_format(avctx, ctx->output_type, pixelformat, buffersize);
+    if (ret < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: set output format failed, %s (%d)\n", __func__, strerror(errno), errno);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
     ret = v4l2_request_select_capture_format(avctx);
     if (ret < 0) {
-        av_log(avctx, AV_LOG_ERROR, "%s: select capture format failed\n", __func__);
+        av_log(avctx, AV_LOG_WARNING, "%s: select capture format failed\n", __func__);
         ret = AVERROR(EINVAL);
         goto fail;
     }
@@ -370,7 +415,7 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
     }
 
     if (V4L2_TYPE_IS_MULTIPLANAR(ctx->format.type)) {
-        av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u\n", __func__, ctx->format.fmt.pix_mp.pixelformat, ctx->format.fmt.pix_mp.width, ctx->format.fmt.pix_mp.height, ctx->format.fmt.pix_mp.plane_fmt[0].bytesperline, ctx->format.fmt.pix_mp.plane_fmt[0].sizeimage);
+        av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u num_planes=%u\n", __func__, ctx->format.fmt.pix_mp.pixelformat, ctx->format.fmt.pix_mp.width, ctx->format.fmt.pix_mp.height, ctx->format.fmt.pix_mp.plane_fmt[0].bytesperline, ctx->format.fmt.pix_mp.plane_fmt[0].sizeimage, ctx->format.fmt.pix_mp.num_planes);
     } else {
         av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u\n", __func__, ctx->format.fmt.pix.pixelformat, ctx->format.fmt.pix.width, ctx->format.fmt.pix.height, ctx->format.fmt.pix.bytesperline, ctx->format.fmt.pix.sizeimage);
     }
@@ -423,11 +468,11 @@ int ff_v4l2_request_uninit(AVCodecContext *avctx)
         av_buffer_pool_reclaim(hwfc->pool);
     }
 
-    if (ctx->media_fd >= 0)
-        close(ctx->media_fd);
-
     if (ctx->video_fd >= 0)
         close(ctx->video_fd);
+
+    if (ctx->media_fd >= 0)
+        close(ctx->media_fd);
 
     return 0;
 }
@@ -449,6 +494,12 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
     if (ret < 0) {
         av_log(avctx, AV_LOG_ERROR, "%s: get format failed for type %u, %s (%d)\n", __func__, type, strerror(errno), errno);
         return ret;
+    }
+
+    if (V4L2_TYPE_IS_MULTIPLANAR(buffers.format.type)) {
+        av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u num_planes=%u\n", __func__, buffers.format.fmt.pix_mp.pixelformat, buffers.format.fmt.pix_mp.width, buffers.format.fmt.pix_mp.height, buffers.format.fmt.pix_mp.plane_fmt[0].bytesperline, buffers.format.fmt.pix_mp.plane_fmt[0].sizeimage, buffers.format.fmt.pix_mp.num_planes);
+    } else {
+        av_log(avctx, AV_LOG_DEBUG, "%s: pixelformat=%d width=%u height=%u bytesperline=%u sizeimage=%u\n", __func__, buffers.format.fmt.pix.pixelformat, buffers.format.fmt.pix.width, buffers.format.fmt.pix.height, buffers.format.fmt.pix.bytesperline, buffers.format.fmt.pix.sizeimage);
     }
 
     ret = ioctl(ctx->video_fd, VIDIOC_CREATE_BUFS, &buffers);
