@@ -23,12 +23,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#include <sys/sysmacros.h>
+#include <libudev.h>
+
 #include "decode.h"
 #include "internal.h"
 #include "v4l2_request.h"
-
-#define V4L2_REQUEST_VIDEO_PATH "/dev/video0"
-#define V4L2_REQUEST_MEDIA_PATH "/dev/media0"
 
 uint64_t ff_v4l2_request_get_capture_timestamp(AVFrame *frame)
 {
@@ -316,35 +316,23 @@ static int v4l2_request_select_capture_format(AVCodecContext *avctx)
     return v4l2_request_set_format(avctx, ctx->format.type, V4L2_PIX_FMT_NV12, 0);
 }
 
-int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t buffersize, struct v4l2_ext_control *control, int count)
+static int v4l2_request_probe_video_device(struct udev_device *device, AVCodecContext *avctx, uint32_t pixelformat, uint32_t buffersize, struct v4l2_ext_control *control, int count)
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
-    int ret;
-    struct media_device_info device_info = {0};
+    int ret = AVERROR(EINVAL);
     struct v4l2_capability capability = {0};
     unsigned int capabilities = 0;
 
-    av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p hw_device_ctx=%p hw_frames_ctx=%p\n", __func__, avctx, ctx, avctx->hw_device_ctx, avctx->hw_frames_ctx);
-
-    ctx->media_fd = open(V4L2_REQUEST_MEDIA_PATH, O_RDWR, 0);
-    if (ctx->media_fd < 0) {
-        av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, V4L2_REQUEST_MEDIA_PATH, strerror(errno), errno);
+    const char *path = udev_device_get_devnode(device);
+    if (!path) {
+        av_log(avctx, AV_LOG_ERROR, "%s: get video device devnode failed\n", __func__);
         ret = AVERROR(EINVAL);
         goto fail;
     }
 
-    ret = ioctl(ctx->media_fd, MEDIA_IOC_DEVICE_INFO, &device_info);
-    if (ret < 0) {
-        av_log(avctx, AV_LOG_ERROR, "%s: get media device info failed, %s (%d)\n", __func__, strerror(errno), errno);
-        ret = AVERROR(EINVAL);
-        goto fail;
-    }
-
-    av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p driver=%s\n", __func__, avctx, ctx, device_info.driver);
-
-    ctx->video_fd = open(V4L2_REQUEST_VIDEO_PATH, O_RDWR | O_NONBLOCK, 0);
+    ctx->video_fd = open(path, O_RDWR | O_NONBLOCK, 0);
     if (ctx->video_fd < 0) {
-        av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, V4L2_REQUEST_VIDEO_PATH, strerror(errno), errno);
+        av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, path, strerror(errno), errno);
         ret = AVERROR(EINVAL);
         goto fail;
     }
@@ -360,6 +348,8 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
         capabilities = capability.device_caps;
     else
         capabilities = capability.capabilities;
+
+    av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p path=%s capabilities=%u\n", __func__, avctx, ctx, path, capabilities);
 
     if ((capabilities & V4L2_CAP_STREAMING) != V4L2_CAP_STREAMING) {
         av_log(avctx, AV_LOG_ERROR, "%s: missing required streaming capability\n", __func__);
@@ -407,6 +397,21 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
         goto fail;
     }
 
+    return 0;
+
+fail:
+    if (ctx->video_fd >= 0) {
+        close(ctx->video_fd);
+        ctx->video_fd = -1;
+    }
+    return ret;
+}
+
+static int v4l2_request_init_context(AVCodecContext *avctx)
+{
+    V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+    int ret;
+
     ret = ioctl(ctx->video_fd, VIDIOC_G_FMT, &ctx->format);
     if (ret < 0) {
         av_log(avctx, AV_LOG_ERROR, "%s: get capture format failed, %s (%d)\n", __func__, strerror(errno), errno);
@@ -442,6 +447,158 @@ int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t b
 
 fail:
     ff_v4l2_request_uninit(avctx);
+    return ret;
+}
+
+static int v4l2_request_probe_media_device(struct udev_device *device, AVCodecContext *avctx, uint32_t pixelformat, uint32_t buffersize, struct v4l2_ext_control *control, int count)
+{
+    V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+    int ret;
+    struct media_device_info device_info = {0};
+    struct media_v2_topology topology = {0};
+    struct media_v2_interface *interfaces = NULL;
+    struct udev *udev = udev_device_get_udev(device);
+    struct udev_device *video_device;
+    dev_t devnum;
+
+    const char *path = udev_device_get_devnode(device);
+    if (!path) {
+        av_log(avctx, AV_LOG_ERROR, "%s: get media device devnode failed\n", __func__);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
+    ctx->media_fd = open(path, O_RDWR, 0);
+    if (ctx->media_fd < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: opening %s failed, %s (%d)\n", __func__, path, strerror(errno), errno);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
+    ret = ioctl(ctx->media_fd, MEDIA_IOC_DEVICE_INFO, &device_info);
+    if (ret < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: get media device info failed, %s (%d)\n", __func__, strerror(errno), errno);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
+    av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p path=%s driver=%s\n", __func__, avctx, ctx, path, device_info.driver);
+
+    ret = ioctl(ctx->media_fd, MEDIA_IOC_G_TOPOLOGY, &topology);
+    if (ret < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: get media topology failed, %s (%d)\n", __func__, strerror(errno), errno);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
+    if (topology.num_interfaces <= 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: media device has no interfaces\n", __func__);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
+    interfaces = av_mallocz(topology.num_interfaces * sizeof(struct media_v2_interface));
+    if (!interfaces) {
+        av_log(avctx, AV_LOG_ERROR, "%s: allocating media interface struct failed\n", __func__);
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+
+    topology.ptr_interfaces = (__u64)interfaces;
+    ret = ioctl(ctx->media_fd, MEDIA_IOC_G_TOPOLOGY, &topology);
+    if (ret < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: get media topology failed, %s (%d)\n", __func__, strerror(errno), errno);
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
+
+    ret = AVERROR(EINVAL);
+    for (int i = 0; i < topology.num_interfaces; i++) {
+        if (interfaces[i].intf_type != MEDIA_INTF_T_V4L_VIDEO)
+            continue;
+
+        devnum = makedev(interfaces[i].devnode.major, interfaces[i].devnode.minor);
+        video_device = udev_device_new_from_devnum(udev, 'c', devnum);
+        if (!video_device) {
+            av_log(avctx, AV_LOG_ERROR, "%s: video_device=%p\n", __func__, video_device);
+            continue;
+        }
+
+        ret = v4l2_request_probe_video_device(video_device, avctx, pixelformat, buffersize, control, count);
+        udev_device_unref(video_device);
+
+        if (!ret)
+            break;
+    }
+
+    av_freep(&interfaces);
+    return ret;
+
+fail:
+    av_freep(&interfaces);
+    if (ctx->media_fd >= 0) {
+        close(ctx->media_fd);
+        ctx->media_fd = -1;
+    }
+    return ret;
+}
+
+int ff_v4l2_request_init(AVCodecContext *avctx, uint32_t pixelformat, uint32_t buffersize, struct v4l2_ext_control *control, int count)
+{
+    V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+    int ret = AVERROR(EINVAL);
+    struct udev *udev;
+    struct udev_enumerate *enumerate;
+    struct udev_list_entry *devices;
+    struct udev_list_entry *entry;
+    struct udev_device *device;
+
+    av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p hw_device_ctx=%p hw_frames_ctx=%p\n", __func__, avctx, avctx->hw_device_ctx, avctx->hw_frames_ctx);
+
+    ctx->media_fd = -1;
+    ctx->video_fd = -1;
+
+    udev = udev_new();
+    if (!udev) {
+        av_log(avctx, AV_LOG_ERROR, "%s: allocating udev context failed\n", __func__);
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+
+    enumerate = udev_enumerate_new(udev);
+    if (!enumerate) {
+        av_log(avctx, AV_LOG_ERROR, "%s: allocating udev enumerator failed\n", __func__);
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+
+    udev_enumerate_add_match_subsystem(enumerate, "media");
+    udev_enumerate_scan_devices(enumerate);
+
+    devices = udev_enumerate_get_list_entry(enumerate);
+    udev_list_entry_foreach(entry, devices) {
+        const char *path = udev_list_entry_get_name(entry);
+        if (!path)
+            continue;
+
+        device = udev_device_new_from_syspath(udev, path);
+        if (!device)
+            continue;
+
+        ret = v4l2_request_probe_media_device(device, avctx, pixelformat, buffersize, control, count);
+        udev_device_unref(device);
+
+        if (!ret)
+            break;
+    }
+
+    udev_enumerate_unref(enumerate);
+
+    if (!ret)
+        ret = v4l2_request_init_context(avctx);
+
+fail:
+    udev_unref(udev);
     return ret;
 }
 
