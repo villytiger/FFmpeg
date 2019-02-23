@@ -310,10 +310,48 @@ static int v4l2_request_set_format(AVCodecContext *avctx, enum v4l2_buf_type typ
 static int v4l2_request_select_capture_format(AVCodecContext *avctx)
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+    enum v4l2_buf_type type = ctx->format.type;
 
-    // TODO: use a supported format (v4l2_request_capture_pixelformats) returned by VIDIOC_G_FMT or VIDIOC_ENUM_FMT
+#if 0
+    struct v4l2_format format = {
+        .type = type,
+    };
+    struct v4l2_fmtdesc fmtdesc = {
+        .index = 0,
+        .type = type,
+    };
+    uint32_t pixelformat;
+    int i;
 
-    return v4l2_request_set_format(avctx, ctx->format.type, V4L2_PIX_FMT_NV12, 0);
+    if (ioctl(ctx->video_fd, VIDIOC_G_FMT, &format) < 0) {
+        av_log(avctx, AV_LOG_ERROR, "%s: get capture format failed, %s (%d)\n", __func__, strerror(errno), errno);
+        return -1;
+    }
+
+    pixelformat = V4L2_TYPE_IS_MULTIPLANAR(type) ? format.fmt.pix_mp.pixelformat : format.fmt.pix.pixelformat;
+
+    for (i = 0; i < FF_ARRAY_ELEMS(v4l2_request_capture_pixelformats); i++) {
+        if (pixelformat == v4l2_request_capture_pixelformats[i])
+            return v4l2_request_set_format(avctx, type, pixelformat, 0);
+    }
+
+    while (ioctl(ctx->video_fd, VIDIOC_ENUM_FMT, &fmtdesc) >= 0) {
+        for (i = 0; i < FF_ARRAY_ELEMS(v4l2_request_capture_pixelformats); i++) {
+            if (fmtdesc.pixelformat == v4l2_request_capture_pixelformats[i])
+                return v4l2_request_set_format(avctx, type, fmtdesc.pixelformat, 0);
+        }
+
+        fmtdesc.index++;
+    }
+#else
+    for (int i = 0; i < FF_ARRAY_ELEMS(v4l2_request_capture_pixelformats); i++) {
+        uint32_t pixelformat = v4l2_request_capture_pixelformats[i];
+        if (!v4l2_request_try_format(avctx, type, pixelformat))
+            return v4l2_request_set_format(avctx, type, pixelformat, 0);
+    }
+#endif
+
+    return -1;
 }
 
 static int v4l2_request_probe_video_device(struct udev_device *device, AVCodecContext *avctx, uint32_t pixelformat, uint32_t buffersize, struct v4l2_ext_control *control, int count)
