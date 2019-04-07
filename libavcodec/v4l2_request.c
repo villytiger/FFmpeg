@@ -542,7 +542,7 @@ static int v4l2_request_probe_media_device(struct udev_device *device, AVCodecCo
         goto fail;
     }
 
-    topology.ptr_interfaces = (__u64)interfaces;
+    topology.ptr_interfaces = (__u64)(uintptr_t)interfaces;
     ret = ioctl(ctx->media_fd, MEDIA_IOC_G_TOPOLOGY, &topology);
     if (ret < 0) {
         av_log(avctx, AV_LOG_ERROR, "%s: get media topology failed, %s (%d)\n", __func__, strerror(errno), errno);
