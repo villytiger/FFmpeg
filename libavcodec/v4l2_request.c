@@ -163,7 +163,7 @@ int ff_v4l2_request_decode_frame(AVCodecContext *avctx, AVFrame *frame, struct v
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
     V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)frame->data[0];
-    struct timeval tv = { 0, 500000 };
+    struct timeval tv = { 2, 0 };
     fd_set except_fds;
     int ret;
 
@@ -643,12 +643,11 @@ fail:
 int ff_v4l2_request_uninit(AVCodecContext *avctx)
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+    int ret;
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p ctx=%p\n", __func__, avctx, ctx);
 
     if (ctx->video_fd >= 0) {
-        int ret;
-
         ret = ioctl(ctx->video_fd, VIDIOC_STREAMOFF, &ctx->output_type);
         if (ret < 0)
             av_log(avctx, AV_LOG_ERROR, "%s: output stream off failed, %s (%d)\n", __func__, strerror(errno), errno);
@@ -675,15 +674,15 @@ int ff_v4l2_request_uninit(AVCodecContext *avctx)
 static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *buf, enum v4l2_buf_type type)
 {
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
-    struct v4l2_create_buffers buffers = {0};
-    struct v4l2_plane planes[1] = {};
     int ret;
+    struct v4l2_plane planes[1] = {};
+    struct v4l2_create_buffers buffers = {
+        .count = 1,
+        .memory = V4L2_MEMORY_MMAP,
+        .format.type = type,
+    };
 
     av_log(avctx, AV_LOG_DEBUG, "%s: avctx=%p buf=%p type=%u\n", __func__, avctx, buf, type);
-
-    buffers.format.type = type;
-    buffers.memory = V4L2_MEMORY_MMAP;
-    buffers.count = 1;
 
     ret = ioctl(ctx->video_fd, VIDIOC_G_FMT, &buffers.format);
     if (ret < 0) {
@@ -703,7 +702,6 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
         return ret;
     }
 
-    buf->index = buffers.index;
     if (V4L2_TYPE_IS_MULTIPLANAR(type)) {
         buf->width = buffers.format.fmt.pix_mp.width;
         buf->height = buffers.format.fmt.pix_mp.height;
@@ -715,6 +713,8 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
         buf->height = buffers.format.fmt.pix.height;
         buf->size = buffers.format.fmt.pix.sizeimage;
     }
+
+    buf->index = buffers.index;
     buf->used = 0;
 
     buf->buffer.type = type;
@@ -737,10 +737,11 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
 
         buf->addr = (uint8_t*)addr;
     } else {
-        struct v4l2_exportbuffer exportbuffer = {0};
-        exportbuffer.type = type;
-        exportbuffer.index = buf->index;
-        exportbuffer.flags = O_RDONLY;
+        struct v4l2_exportbuffer exportbuffer = {
+            .type = type,
+            .index = buf->index,
+            .flags = O_RDONLY,
+        };
 
         ret = ioctl(ctx->video_fd, VIDIOC_EXPBUF, &exportbuffer);
         if (ret < 0) {
