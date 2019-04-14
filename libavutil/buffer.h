@@ -269,7 +269,7 @@ AVBufferPool *av_buffer_pool_init2(int size, void *opaque,
 /**
  * Free all available buffers in a buffer pool.
  */
- void av_buffer_pool_reclaim(AVBufferPool *pool);
+ void av_buffer_pool_flush(AVBufferPool *pool);
 
 /**
  * Mark the pool as being available for freeing. It will actually be freed only

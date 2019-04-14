@@ -659,7 +659,7 @@ int ff_v4l2_request_uninit(AVCodecContext *avctx)
 
     if (avctx->hw_frames_ctx) {
         AVHWFramesContext *hwfc = (AVHWFramesContext*)avctx->hw_frames_ctx->data;
-        av_buffer_pool_reclaim(hwfc->pool);
+        av_buffer_pool_flush(hwfc->pool);
     }
 
     if (ctx->video_fd >= 0)
@@ -841,7 +841,7 @@ static void v4l2_request_hwframe_ctx_free(AVHWFramesContext *hwfc)
 {
     av_log(NULL, AV_LOG_DEBUG, "%s: hwfc=%p pool=%p\n", __func__, hwfc, hwfc->pool);
 
-    av_buffer_pool_reclaim(hwfc->pool);
+    av_buffer_pool_flush(hwfc->pool);
     av_buffer_pool_uninit(&hwfc->pool);
 }
 

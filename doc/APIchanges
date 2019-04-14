@@ -15,6 +15,9 @@ libavutil:     2017-10-21
 
 API changes, most recent first:
 
+2019-XX-XX - xxxxxxxxxx - lavu 56.XX.100 - buffer.h
+  Add av_buffer_pool_flush().
+
 -------- 8< --------- FFmpeg 4.0 was cut here -------- 8< ---------
 
 2018-04-03 - d6fc031caf - lavu 56.13.100 - pixdesc.h
