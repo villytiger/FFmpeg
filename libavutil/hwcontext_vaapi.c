@@ -935,8 +935,20 @@ static const struct {
     DRM_MAP(NV12, 2, DRM_FORMAT_R8,  DRM_FORMAT_RG88),
 #endif
     DRM_MAP(NV12, 1, DRM_FORMAT_NV12),
+#ifdef VA_FOURCC_I420
+    DRM_MAP(I420, 1, DRM_FORMAT_YUV420),
+#endif
+    DRM_MAP(YV12, 1, DRM_FORMAT_YVU420),
+#ifdef VA_FOURCC_YV16
+    DRM_MAP(YV16, 1, DRM_FORMAT_YVU422),
+#endif
+    DRM_MAP(YUY2, 1, DRM_FORMAT_YUYV),
+    DRM_MAP(UYVY, 1, DRM_FORMAT_UYVY),
 #if defined(VA_FOURCC_P010) && defined(DRM_FORMAT_R16)
     DRM_MAP(P010, 2, DRM_FORMAT_R16, DRM_FORMAT_RG1616),
+#endif
+#if defined(VA_FOURCC_P010) && defined(DRM_FORMAT_P010)
+    DRM_MAP(P010, 1, DRM_FORMAT_P010),
 #endif
     DRM_MAP(BGRA, 1, DRM_FORMAT_ARGB8888),
     DRM_MAP(BGRX, 1, DRM_FORMAT_XRGB8888),
@@ -1100,7 +1112,7 @@ static int vaapi_map_to_drm_esh(AVHWFramesContext *hwfc, AVFrame *dst,
 
     surface_id = (VASurfaceID)(uintptr_t)src->data[3];
 
-    export_flags = VA_EXPORT_SURFACE_SEPARATE_LAYERS;
+    export_flags = VA_EXPORT_SURFACE_COMPOSED_LAYERS;
     if (flags & AV_HWFRAME_MAP_READ)
         export_flags |= VA_EXPORT_SURFACE_READ_ONLY;
     if (flags & AV_HWFRAME_MAP_WRITE)
@@ -1115,6 +1127,12 @@ static int vaapi_map_to_drm_esh(AVHWFramesContext *hwfc, AVFrame *dst,
         av_log(hwfc, AV_LOG_ERROR, "Failed to export surface %#x: "
                "%d (%s).\n", surface_id, vas, vaErrorStr(vas));
         return AVERROR(EIO);
+    }
+
+    vas = vaSyncSurface(hwctx->display, surface_id);
+    if (vas != VA_STATUS_SUCCESS) {
+        av_log(hwfc, AV_LOG_ERROR, "Failed to sync surface %#x: "
+               "%d (%s).\n", surface_id, vas, vaErrorStr(vas));
     }
 
     drm_desc = av_mallocz(sizeof(*drm_desc));
@@ -1142,6 +1160,17 @@ static int vaapi_map_to_drm_esh(AVHWFramesContext *hwfc, AVFrame *dst,
                 va_desc.layers[i].offset[j];
             drm_desc->layers[i].planes[j].pitch =
                 va_desc.layers[i].pitch[j];
+        }
+    }
+    if (va_desc.num_layers == 1) {
+        drm_desc->format = va_desc.layers[0].drm_format;
+    } else {
+        for (i = 0; i < FF_ARRAY_ELEMS(vaapi_drm_format_map); i++) {
+            if (vaapi_drm_format_map[i].va_fourcc == va_desc.fourcc &&
+                vaapi_drm_format_map[i].nb_layer_formats == 1) {
+                drm_desc->format = vaapi_drm_format_map[i].layer_formats[0];
+                break;
+            }
         }
     }
 
