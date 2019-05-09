@@ -162,6 +162,7 @@ static int kmsgrab_read_packet(AVFormatContext *avctx, AVPacket *pkt)
                 .pitch        = fb->pitch,
             },
         },
+        .format = ctx->drm_format,
     };
 
     frame = av_frame_alloc();
