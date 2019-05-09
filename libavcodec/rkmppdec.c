@@ -419,6 +419,7 @@ static int rkmpp_retrieve_frame(AVCodecContext *avctx, AVFrame *frame)
                 goto fail;
             }
 
+            desc->format = drmformat;
             desc->nb_objects = 1;
             desc->objects[0].fd = mpp_buffer_get_fd(buffer);
             desc->objects[0].size = mpp_buffer_get_size(buffer);
