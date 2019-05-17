@@ -74,7 +74,7 @@ static int v4l2_request_queue_buffer(V4L2RequestContext *ctx, int request_fd, V4
         .type = buf->buffer.type,
         .memory = buf->buffer.memory,
         .index = buf->index,
-        .timestamp.tv_usec = buf->index,
+        .timestamp.tv_usec = buf->index + 1,
         .bytesused = buf->used,
         .request_fd = request_fd,
         .flags = (request_fd >= 0) ? V4L2_BUF_FLAG_REQUEST_FD : 0,
@@ -174,6 +174,8 @@ int ff_v4l2_request_decode_frame(AVCodecContext *avctx, AVFrame *frame, struct v
         av_log(avctx, AV_LOG_ERROR, "%s: set controls failed for request %d, %s (%d)\n", __func__, req->request_fd, strerror(errno), errno);
         return -1;
     }
+
+    memset(req->output.addr + req->output.used, 0, AV_INPUT_BUFFER_PADDING_SIZE);
 
     ret = v4l2_request_queue_buffer(ctx, req->request_fd, &req->output);
     if (ret < 0) {
@@ -720,13 +722,14 @@ static int v4l2_request_buffer_alloc(AVCodecContext *avctx, V4L2RequestBuffer *b
     buf->buffer.type = type;
     buf->buffer.memory = V4L2_MEMORY_MMAP;
     buf->buffer.index = buf->index;
-    buf->buffer.timestamp.tv_usec = buf->index;
 
     ret = ioctl(ctx->video_fd, VIDIOC_QUERYBUF, &buf->buffer);
     if (ret < 0) {
         av_log(avctx, AV_LOG_ERROR, "%s: query buffer %d failed, %s (%d)\n", __func__, buf->index, strerror(errno), errno);
         return ret;
     }
+
+    buf->buffer.timestamp.tv_usec = buf->index + 1;
 
     if (V4L2_TYPE_IS_OUTPUT(type)) {
         void *addr = mmap(NULL, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->video_fd, V4L2_TYPE_IS_MULTIPLANAR(type) ? buf->buffer.m.planes[0].m.mem_offset : buf->buffer.m.offset);
