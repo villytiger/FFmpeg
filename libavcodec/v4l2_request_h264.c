@@ -34,6 +34,8 @@ typedef struct V4L2RequestContextH264 {
     struct v4l2_h264_dpb_entry dpb[16];
 } V4L2RequestContextH264;
 
+static uint8_t nalu_slice_start_code[] = { 0x00, 0x00, 0x01 };
+
 static void fill_weight_factors(struct v4l2_h264_weight_factors *factors, int list, const H264SliceContext *sl)
 {
     for (int i = 0; i < sl->ref_count[list]; i++) {
@@ -327,16 +329,11 @@ static int v4l2_request_h264_decode_slice(AVCodecContext *avctx, const uint8_t *
     const PPS *pps = h->ps.pps;
     const H264SliceContext *sl = &h->slice_ctx[0];
     V4L2RequestControlsH264 *controls = h->cur_pic_ptr->hwaccel_picture_private;
-    V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->cur_pic_ptr->f->data[0];
     int i, count;
 
-    // HACK: trigger decode per slice
-    if (req->output.used) {
-        v4l2_request_h264_end_frame(avctx);
-        ff_v4l2_request_reset_frame(avctx, h->cur_pic_ptr->f);
-    }
-
     controls->decode_params.num_slices++;
+
+    if (controls->decode_params.num_slices == 1) {
 
     controls->slice_params = (struct v4l2_ctrl_h264_slice_params) {
         /* Size in bytes, including header */
@@ -395,6 +392,9 @@ static int v4l2_request_h264_decode_slice(AVCodecContext *avctx, const uint8_t *
     if (count)
         fill_weight_factors(&controls->slice_params.pred_weight_table.weight_factors[1], 1, sl);
 
+    }
+
+    ff_v4l2_request_append_output_buffer(avctx, h->cur_pic_ptr->f, nalu_slice_start_code, 3);
     return ff_v4l2_request_append_output_buffer(avctx, h->cur_pic_ptr->f, buffer, size);
 }
 
