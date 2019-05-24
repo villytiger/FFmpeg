@@ -61,8 +61,10 @@ static void fill_dpb_entry(struct v4l2_h264_dpb_entry *entry, const H264Picture 
         entry->flags |= V4L2_H264_DPB_ENTRY_FLAG_ACTIVE;
     if (pic->long_ref)
         entry->flags |= V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM;
-    entry->top_field_order_cnt = pic->field_poc[0];
-    entry->bottom_field_order_cnt = pic->field_poc[1];
+    if (pic->field_poc[0] != INT_MAX)
+        entry->top_field_order_cnt = pic->field_poc[0];
+    if (pic->field_poc[1] != INT_MAX)
+        entry->bottom_field_order_cnt = pic->field_poc[1];
 }
 
 static void fill_dpb(struct v4l2_ctrl_h264_decode_params *decode, const H264Context *h)
@@ -71,7 +73,7 @@ static void fill_dpb(struct v4l2_ctrl_h264_decode_params *decode, const H264Cont
 
     for (int i = 0; i < h->short_ref_count; i++) {
         const H264Picture *pic = h->short_ref[i];
-        if (pic)
+        if (pic && (pic->field_poc[0] != INT_MAX || pic->field_poc[1] != INT_MAX))
             fill_dpb_entry(&decode->dpb[entries++], pic);
     }
 
@@ -80,7 +82,7 @@ static void fill_dpb(struct v4l2_ctrl_h264_decode_params *decode, const H264Cont
 
     for (int i = 0; i < FF_ARRAY_ELEMS(h->long_ref); i++) {
         const H264Picture *pic = h->long_ref[i];
-        if (pic)
+        if (pic && (pic->field_poc[0] != INT_MAX || pic->field_poc[1] != INT_MAX))
             fill_dpb_entry(&decode->dpb[entries++], pic);
     }
 }
@@ -196,11 +198,8 @@ static int v4l2_request_h264_start_frame(AVCodecContext *avctx,
     controls->decode_params = (struct v4l2_ctrl_h264_decode_params) {
         .num_slices = 0,
         .nal_ref_idc = h->nal_ref_idc,
-        //.ref_pic_list_p0[32]  - not required? not set by libva-v4l2-request
-        //.ref_pic_list_b0[32]  - not required? not set by libva-v4l2-request
-        //.ref_pic_list_b1[32]  - not required? not set by libva-v4l2-request
-        .top_field_order_cnt = h->cur_pic_ptr->field_poc[0],
-        .bottom_field_order_cnt = h->cur_pic_ptr->field_poc[1],
+        .top_field_order_cnt = h->cur_pic_ptr->field_poc[0] != INT_MAX ? h->cur_pic_ptr->field_poc[0] : 0,
+        .bottom_field_order_cnt = h->cur_pic_ptr->field_poc[1] != INT_MAX ? h->cur_pic_ptr->field_poc[1] : 0,
     };
 
     if (h->picture_idr)
