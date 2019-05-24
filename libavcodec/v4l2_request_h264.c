@@ -29,6 +29,11 @@ typedef struct V4L2RequestControlsH264 {
     struct v4l2_ctrl_h264_slice_params slice_params;
 } V4L2RequestControlsH264;
 
+typedef struct V4L2RequestContextH264 {
+    V4L2RequestContext ctx;
+    struct v4l2_h264_dpb_entry dpb[16];
+} V4L2RequestContextH264;
+
 static void fill_weight_factors(struct v4l2_h264_weight_factors *factors, int list, const H264SliceContext *sl)
 {
     for (int i = 0; i < sl->ref_count[list]; i++) {
@@ -70,6 +75,14 @@ static void fill_dpb_entry(struct v4l2_h264_dpb_entry *entry, const H264Picture 
         entry->bottom_field_order_cnt = pic->field_poc[1];
 }
 
+static int dpb_has_reference_ts(struct v4l2_h264_dpb_entry *dpb, int entries, uint64_t timestamp)
+{
+    for (int i = 0; i < entries; i++)
+        if (dpb[i].reference_ts == timestamp)
+            return i;
+    return -1;
+}
+
 static void fill_dpb(struct v4l2_ctrl_h264_decode_params *decode, const H264Context *h)
 {
     int entries = 0;
@@ -80,14 +93,69 @@ static void fill_dpb(struct v4l2_ctrl_h264_decode_params *decode, const H264Cont
             fill_dpb_entry(&decode->dpb[entries++], pic);
     }
 
-    if (!h->long_ref_count)
-        return;
+    //if (!h->long_ref_count)
+    //    return;
 
     for (int i = 0; i < FF_ARRAY_ELEMS(h->long_ref); i++) {
         const H264Picture *pic = h->long_ref[i];
         if (pic && (pic->field_poc[0] != INT_MAX || pic->field_poc[1] != INT_MAX))
             fill_dpb_entry(&decode->dpb[entries++], pic);
     }
+
+    if (h->nal_ref_idc) {
+        struct v4l2_h264_dpb_entry *entry;
+        const H264Picture *pic = h->cur_pic_ptr;
+        uint64_t timestamp = ff_v4l2_request_get_capture_timestamp(pic->f);
+        int idx = dpb_has_reference_ts(decode->dpb, entries, timestamp);
+
+        if (idx >= 0)
+            return;
+
+        entry = &decode->dpb[entries++];
+        entry->reference_ts = timestamp;
+        entry->frame_num = pic->frame_num;
+        entry->pic_num = pic->pic_id;
+        entry->flags = V4L2_H264_DPB_ENTRY_FLAG_VALID;
+    }
+}
+
+static void adjust_dpb(V4L2RequestContextH264 *ctx, V4L2RequestControlsH264 *controls)
+{
+    struct v4l2_h264_dpb_entry *ctrl_dpb = controls->decode_params.dpb;
+    struct v4l2_h264_dpb_entry *ctx_dpb = ctx->dpb;
+
+    for (int i = 0; i < FF_ARRAY_ELEMS(ctx->dpb); i++) {
+        int found = 0;
+
+        if (!ctx_dpb[i].flags)
+            continue;
+
+        for (int j = 0; j < FF_ARRAY_ELEMS(ctx->dpb); j++) {
+            if (ctrl_dpb[j].flags && ctrl_dpb[j].reference_ts == ctx_dpb[i].reference_ts) {
+                ctx_dpb[i] = ctrl_dpb[j];
+                ctrl_dpb[j].flags = 0;
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found)
+            ctx_dpb[i] = (struct v4l2_h264_dpb_entry) {};
+    }
+
+    for (int i = 0, j = 0; i < FF_ARRAY_ELEMS(ctx->dpb); i++) {
+        if (!ctrl_dpb[i].flags)
+            continue;
+
+        for (; j < FF_ARRAY_ELEMS(ctx->dpb); j++) {
+            if (!ctx_dpb[j].flags) {
+                ctx_dpb[j] = ctrl_dpb[i];
+                break;
+            }
+        }
+    }
+
+    memcpy(ctrl_dpb, ctx_dpb, sizeof(ctx->dpb));
 }
 
 static uint8_t get_dpb_index(struct v4l2_ctrl_h264_decode_params *decode, const H264Ref *ref)
@@ -209,6 +277,7 @@ static int v4l2_request_h264_start_frame(AVCodecContext *avctx,
         controls->decode_params.flags |= V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC;
 
     fill_dpb(&controls->decode_params, h);
+    adjust_dpb(avctx->internal->hwaccel_priv_data, controls);
 
     return ff_v4l2_request_reset_frame(avctx, h->cur_pic_ptr->f);
 }
@@ -365,7 +434,7 @@ const AVHWAccel ff_h264_v4l2request_hwaccel = {
     .frame_priv_data_size = sizeof(V4L2RequestControlsH264),
     .init           = v4l2_request_h264_init,
     .uninit         = ff_v4l2_request_uninit,
-    .priv_data_size = sizeof(V4L2RequestContext),
+    .priv_data_size = sizeof(V4L2RequestContextH264),
     .frame_params   = ff_v4l2_request_frame_params,
     .caps_internal  = HWACCEL_CAP_ASYNC_SAFE,
 };
