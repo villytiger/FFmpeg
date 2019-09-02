@@ -198,13 +198,22 @@ static int v4l2_request_h264_start_frame(AVCodecContext *avctx,
 {
     const H264Context *h = avctx->priv_data;
     const PPS *pps = h->ps.pps;
+    const SPS *sps = h->ps.sps;
     V4L2RequestControlsH264 *controls = h->cur_pic_ptr->hwaccel_picture_private;
 
     fill_sps(&controls->sps, h);
     fill_pps(&controls->pps, h);
 
     memcpy(controls->scaling_matrix.scaling_list_4x4, pps->scaling_matrix4, sizeof(controls->scaling_matrix.scaling_list_4x4));
-    memcpy(controls->scaling_matrix.scaling_list_8x8, pps->scaling_matrix8, sizeof(controls->scaling_matrix.scaling_list_8x8));
+    memcpy(controls->scaling_matrix.scaling_list_8x8[0], pps->scaling_matrix8[0], sizeof(controls->scaling_matrix.scaling_list_8x8[0]));
+    memcpy(controls->scaling_matrix.scaling_list_8x8[1], pps->scaling_matrix8[3], sizeof(controls->scaling_matrix.scaling_list_8x8[1]));
+
+    if (sps->chroma_format_idc == 3) {
+        memcpy(controls->scaling_matrix.scaling_list_8x8[2], pps->scaling_matrix8[1], sizeof(controls->scaling_matrix.scaling_list_8x8[2]));
+        memcpy(controls->scaling_matrix.scaling_list_8x8[3], pps->scaling_matrix8[4], sizeof(controls->scaling_matrix.scaling_list_8x8[3]));
+        memcpy(controls->scaling_matrix.scaling_list_8x8[4], pps->scaling_matrix8[2], sizeof(controls->scaling_matrix.scaling_list_8x8[4]));
+        memcpy(controls->scaling_matrix.scaling_list_8x8[5], pps->scaling_matrix8[5], sizeof(controls->scaling_matrix.scaling_list_8x8[5]));
+    }
 
     controls->decode_params = (struct v4l2_ctrl_h264_decode_params) {
         .num_slices = 0,
