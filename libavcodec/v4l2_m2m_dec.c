@@ -240,12 +240,12 @@ static av_cold int v4l2_decode_init(AVCodecContext *avctx)
         }
     }
 
+    s->avctx = avctx;
     ret = ff_v4l2_m2m_codec_init(priv);
     if (ret) {
         av_log(avctx, AV_LOG_ERROR, "can't configure decoder\n");
         return ret;
     }
-    s->avctx = avctx;
 
     return v4l2_prepare_decoder(s);
 }
