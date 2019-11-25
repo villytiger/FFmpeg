@@ -290,6 +290,11 @@ static V4L2Buffer* v4l2_dequeue_v4l2buf(V4L2Context *ctx, int timeout)
     };
     int i, ret;
 
+    if (ctx->done) {
+        av_log(logger(ctx), AV_LOG_INFO, "v4l2_dequeue: done:1 output:%d\n", V4L2_TYPE_IS_OUTPUT(ctx->type));
+        return NULL;
+    }
+
     /* if there are no more capture buffers queued in the driver, skip polling */
     if (!V4L2_TYPE_IS_OUTPUT(ctx->type)) {
         for (i = 0; i < ctx->num_buffers; i++) {
@@ -303,9 +308,12 @@ static V4L2Buffer* v4l2_dequeue_v4l2buf(V4L2Context *ctx, int timeout)
                 goto start;
         }
         /* if we were waiting to drain, all done! */
-        if (ctx_to_m2mctx(ctx)->draining)
-            ctx->done = 1;
-        return NULL;
+        if (ctx_to_m2mctx(ctx)->draining) {
+            av_log(logger(ctx), AV_LOG_INFO, "v4l2_dequeue: draining, setting ctx done=1, output:%d\n", V4L2_TYPE_IS_OUTPUT(ctx->type));
+            //ctx->done = 1;
+        }
+        //return NULL;
+        timeout = 0;
     }
 
 start:
@@ -386,12 +394,21 @@ dequeue:
         ret = ioctl(ctx_to_m2mctx(ctx)->fd, VIDIOC_DQBUF, &buf);
         if (ret) {
             if (errno != EAGAIN) {
+                av_log(logger(ctx), AV_LOG_INFO, "v4l2_dequeue: setting ctx done=1, output:%d\n", V4L2_TYPE_IS_OUTPUT(ctx->type));
                 ctx->done = 1;
                 if (errno != EPIPE)
-                    av_log(logger(ctx), AV_LOG_DEBUG, "%s VIDIOC_DQBUF, errno (%s)\n",
+                    av_log(logger(ctx), AV_LOG_WARNING, "%s VIDIOC_DQBUF, errno (%s)\n",
                         ctx->name, av_err2str(AVERROR(errno)));
             }
             return NULL;
+        }
+
+        if (buf.flags & V4L2_BUF_FLAG_LAST) {
+            av_log(logger(ctx), AV_LOG_INFO, "v4l2_dequeue: V4L2_BUF_FLAG_LAST, setting ctx done=1, output:%d\n", V4L2_TYPE_IS_OUTPUT(ctx->type));
+            ctx->done = 1;
+            if (V4L2_TYPE_IS_MULTIPLANAR(ctx->type) && buf.m.planes[0].bytesused == 0 ||
+               !V4L2_TYPE_IS_MULTIPLANAR(ctx->type) && buf.bytesused == 0)
+                return NULL;
         }
 
         avbuf = &ctx->buffers[buf.index];
@@ -576,6 +593,8 @@ int ff_v4l2_context_set_status(V4L2Context* ctx, uint32_t cmd)
 {
     int type = ctx->type;
     int ret;
+
+    av_log(logger(ctx), AV_LOG_INFO, "output:%d streamon:%d\n", V4L2_TYPE_IS_OUTPUT(type), cmd == VIDIOC_STREAMON);
 
     ret = ioctl(ctx_to_m2mctx(ctx)->fd, cmd, &type);
     if (ret < 0)

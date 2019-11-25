@@ -50,7 +50,7 @@ static int v4l2_try_start(AVCodecContext *avctx)
     if (!output->streamon) {
         ret = ff_v4l2_context_set_status(output, VIDIOC_STREAMON);
         if (ret < 0) {
-            av_log(avctx, AV_LOG_DEBUG, "VIDIOC_STREAMON on output context\n");
+            av_log(avctx, AV_LOG_WARNING, "VIDIOC_STREAMON failed on output context\n");
             return ret;
         }
     }
@@ -104,7 +104,7 @@ static int v4l2_try_start(AVCodecContext *avctx)
     /* 5. start the capture process */
     ret = ff_v4l2_context_set_status(capture, VIDIOC_STREAMON);
     if (ret) {
-        av_log(avctx, AV_LOG_DEBUG, "VIDIOC_STREAMON, on capture context\n");
+        av_log(avctx, AV_LOG_WARNING, "VIDIOC_STREAMON failed on capture context\n");
         return ret;
     }
 
@@ -264,17 +264,22 @@ static void v4l2_flush(AVCodecContext *avctx)
     V4L2m2mContext* s = priv->context;
     int ret;
 
+    av_log(avctx, AV_LOG_INFO, "v4l2_flush: wait for pending buffer references\n");
+
     /* wait for pending buffer references */
-    if (atomic_load(&s->refcount))
-        while(sem_wait(&s->refsync) == -1 && errno == EINTR);
+    //if (atomic_load(&s->refcount))
+    //    while(sem_wait(&s->refsync) == -1 && errno == EINTR);
+
+    av_log(avctx, AV_LOG_INFO, "v4l2_flush: output streamoff\n");
 
     ret = ff_v4l2_context_set_status(&s->output, VIDIOC_STREAMOFF);
     if (ret)
         av_log(avctx, AV_LOG_ERROR, "VIDIOC_STREAMOFF %s\n", s->output.name);
 
-    ret = ff_v4l2_context_set_status(&s->capture, VIDIOC_STREAMOFF);
-    if (ret)
-        av_log(avctx, AV_LOG_ERROR, "VIDIOC_STREAMOFF %s\n", s->capture.name);
+    av_log(avctx, AV_LOG_INFO, "v4l2_flush: reset draining\n");
+
+    s->capture.done = s->output.done = 0;
+    s->draining = 0;
 }
 
 #define OFFSET(x) offsetof(V4L2m2mPriv, x)

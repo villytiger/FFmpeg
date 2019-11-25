@@ -211,7 +211,7 @@ int ff_v4l2_m2m_codec_reinit(V4L2m2mContext* s)
     void *log_ctx = s->priv;
     int ret;
 
-    av_log(log_ctx, AV_LOG_DEBUG, "reinit context\n");
+    av_log(log_ctx, AV_LOG_INFO, "reinit context\n");
 
     /* 1. streamoff */
     ret = ff_v4l2_context_set_status(&s->capture, VIDIOC_STREAMOFF);
@@ -222,7 +222,7 @@ int ff_v4l2_m2m_codec_reinit(V4L2m2mContext* s)
      *    we must wait for all references to be released before being allowed
      *    to queue new buffers.
      */
-    av_log(log_ctx, AV_LOG_DEBUG, "waiting for user to release AVBufferRefs\n");
+    av_log(log_ctx, AV_LOG_INFO, "waiting for user to release AVBufferRefs\n");
     if (atomic_load(&s->refcount))
         while(sem_wait(&s->refsync) == -1 && errno == EINTR);
 
@@ -254,7 +254,7 @@ int ff_v4l2_m2m_codec_full_reinit(V4L2m2mContext *s)
     void *log_ctx = s->avctx;
     int ret;
 
-    av_log(log_ctx, AV_LOG_DEBUG, "%s full reinit\n", s->devname);
+    av_log(log_ctx, AV_LOG_INFO, "%s full reinit\n", s->devname);
 
     /* wait for pending buffer references */
     if (atomic_load(&s->refcount))
