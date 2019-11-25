@@ -280,7 +280,7 @@ static uint8_t *v4l2_get_drm_frame(V4L2Buffer *avbuf)
         layer->planes[i].pitch = avbuf->plane_info[i].bytesperline;
     }
 
-    switch (avbuf->context->av_pix_fmt) {
+    switch (avbuf->context->sw_pix_fmt) {
     case AV_PIX_FMT_YUYV422:
         layer->format = DRM_FORMAT_YUYV;
         layer->nb_planes = 1;
@@ -289,7 +289,7 @@ static uint8_t *v4l2_get_drm_frame(V4L2Buffer *avbuf)
 
     case AV_PIX_FMT_NV12:
     case AV_PIX_FMT_NV21:
-        layer->format = avbuf->context->av_pix_fmt == AV_PIX_FMT_NV12 ?
+        layer->format = avbuf->context->sw_pix_fmt == AV_PIX_FMT_NV12 ?
             DRM_FORMAT_NV12 : DRM_FORMAT_NV21;
 
         if (avbuf->num_planes > 1)
