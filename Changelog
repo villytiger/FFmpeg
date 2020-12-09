@@ -52,6 +52,7 @@ version <next>:
 - Microsoft Paint (MSP) version 2 decoder
 - Microsoft Paint (MSP) demuxer
 - AV1 monochrome encoding support via libaom >= 2.0.1
+- V4L2 mem2mem stateless H.264 hwaccel
 
 
 version 4.3:
