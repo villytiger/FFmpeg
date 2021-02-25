@@ -38,6 +38,14 @@
 #define DRM_FORMAT_NV20 fourcc_code('N', 'V', '2', '0')
 #endif
 
+#ifndef V4L2_PIX_FMT_NV15
+#define V4L2_PIX_FMT_NV15 v4l2_fourcc('N', 'V', '1', '5')
+#endif
+
+#ifndef V4L2_PIX_FMT_NV20
+#define V4L2_PIX_FMT_NV20 v4l2_fourcc('N', 'V', '2', '0')
+#endif
+
 uint64_t ff_v4l2_request_get_capture_timestamp(AVFrame *frame)
 {
     V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)frame->data[0];
